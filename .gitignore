@@ -1,0 +1,36 @@
+# Environnement virtuel Python
+.venv/
+venv/
+env/
+
+# Fichiers Python compilés
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Cartes HTML générées
+*.html
+
+# Fichiers de test
+test_*.py
+explore_*.py
+
+# Fichiers temporaires
+*.tmp
+*.temp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
