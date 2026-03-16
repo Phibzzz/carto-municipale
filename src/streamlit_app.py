@@ -1361,6 +1361,712 @@ def render_comparison_visualization(
 
 
 # =============================================================================
+# REPORT DE VOIX — Véziès & Friess → Vignot (T1 2026)
+# =============================================================================
+
+def _map_center_from_geojson(geojson: Dict) -> Dict:
+    """Calcule le centre moyen de la carte à partir des features GeoJSON."""
+    lons, lats = [], []
+    for feature in geojson['features']:
+        coords = feature['geometry']['coordinates']
+        geom_type = feature['geometry']['type']
+        if geom_type == 'Polygon':
+            for ring in coords:
+                for p in ring:
+                    lons.append(p[0]); lats.append(p[1])
+        elif geom_type == 'MultiPolygon':
+            for polygon in coords:
+                for ring in polygon:
+                    for p in ring:
+                        lons.append(p[0]); lats.append(p[1])
+    return {'lat': sum(lats) / len(lats), 'lon': sum(lons) / len(lons)}
+
+
+def render_vote_transfer_analysis(df_candidates: pd.DataFrame, geojson_enriched: Dict):
+    """
+    Visualisation interactive du report de voix de Séverine Véziès et Nicole Friess
+    vers Anne Vignot au second tour de 2026.
+
+    Un slider permet d'ajuster le taux de report (0–100 %) et recalcule en temps réel
+    les scores projetés bureau par bureau.
+    """
+    st.subheader("🔁 Simulation de report de voix — Véziès & Friess → Vignot")
+    st.caption(
+        "Cette simulation estime le score d'Anne Vignot au second tour en supposant "
+        "qu'un certain pourcentage des voix de Séverine Véziès et de Nicole Friess "
+        "se reporterait en sa faveur."
+    )
+
+    NOM_VIGNOT = 'Anne Vignot'
+    NOM_FAGAUT = 'Ludovic Fagaut'
+    NOM_VEZIÈS = 'Séverine Véziès'
+    NOM_FRIESS = 'Nicole Friess'
+
+    candidats_dispo = set(df_candidates['CANDIDAT'].unique())
+    if not {NOM_VIGNOT, NOM_FAGAUT}.issubset(candidats_dispo):
+        st.warning("Données insuffisantes pour cette analyse (Vignot ou Fagaut absent).")
+        return
+
+    # --------------------------------------------------------
+    # Construction du DataFrame de base bureau × candidat
+    # --------------------------------------------------------
+    bureaux_base = (
+        df_candidates.groupby('NUM_BUREAU')
+        .first()[['INSCRITS', 'VOTANTS', 'EXPRIMES']]
+        .reset_index()
+    )
+
+    def _voix_bureau(nom, alias):
+        sub = df_candidates[df_candidates['CANDIDAT'] == nom][
+            ['NUM_BUREAU', 'VOIX', 'POURCENTAGE_EXPRIMES']
+        ].copy()
+        sub.columns = ['NUM_BUREAU', f'VOIX_{alias}', f'PCT_{alias}']
+        return sub
+
+    df_analysis = bureaux_base.copy()
+    df_analysis = df_analysis.merge(_voix_bureau(NOM_VIGNOT, 'VIGNOT'), on='NUM_BUREAU', how='left')
+    df_analysis = df_analysis.merge(_voix_bureau(NOM_FAGAUT, 'FAGAUT'), on='NUM_BUREAU', how='left')
+
+    if NOM_VEZIÈS in candidats_dispo:
+        df_analysis = df_analysis.merge(_voix_bureau(NOM_VEZIÈS, 'VEZIÈS'), on='NUM_BUREAU', how='left')
+    else:
+        df_analysis['VOIX_VEZIÈS'] = 0; df_analysis['PCT_VEZIÈS'] = 0.0
+
+    if NOM_FRIESS in candidats_dispo:
+        df_analysis = df_analysis.merge(_voix_bureau(NOM_FRIESS, 'FRIESS'), on='NUM_BUREAU', how='left')
+    else:
+        df_analysis['VOIX_FRIESS'] = 0; df_analysis['PCT_FRIESS'] = 0.0
+
+    df_analysis = df_analysis.fillna(0)
+
+    # --------------------------------------------------------
+    # Slider de taux de report
+    # --------------------------------------------------------
+    taux_pct = st.slider(
+        "Taux de report Véziès + Friess → Vignot (%)",
+        min_value=0, max_value=100, value=50, step=5,
+        help="50 % signifie que la moitié des voix de Véziès et Friess se reportent sur Vignot."
+    )
+    taux = taux_pct / 100.0
+
+    # --------------------------------------------------------
+    # Calculs projetés
+    # --------------------------------------------------------
+    df_analysis['VOIX_REPORT'] = (df_analysis['VOIX_VEZIÈS'] + df_analysis['VOIX_FRIESS']) * taux
+    df_analysis['VOIX_VIGNOT_PROJ'] = df_analysis['VOIX_VIGNOT'] + df_analysis['VOIX_REPORT']
+    df_analysis['PCT_VIGNOT_PROJ'] = df_analysis.apply(
+        lambda r: r['VOIX_VIGNOT_PROJ'] / r['EXPRIMES'] * 100 if r['EXPRIMES'] > 0 else 0.0, axis=1
+    )
+    df_analysis['ECART_PROJ'] = df_analysis['PCT_VIGNOT_PROJ'] - df_analysis['PCT_FAGAUT']
+    df_analysis['VIGNOT_EN_TETE'] = df_analysis['ECART_PROJ'] > 0
+    df_analysis['VIGNOT_EN_TETE_ACTUEL'] = df_analysis['PCT_VIGNOT'] > df_analysis['PCT_FAGAUT']
+
+    # Totaux
+    total_exprimes  = df_analysis['EXPRIMES'].sum()
+    total_vignot    = df_analysis['VOIX_VIGNOT'].sum()
+    total_fagaut    = df_analysis['VOIX_FAGAUT'].sum()
+    total_veziès    = df_analysis['VOIX_VEZIÈS'].sum()
+    total_friess    = df_analysis['VOIX_FRIESS'].sum()
+    total_report    = (total_veziès + total_friess) * taux
+    total_vignot_p  = total_vignot + total_report
+
+    score_actuel = total_vignot / total_exprimes * 100 if total_exprimes > 0 else 0
+    score_proj   = total_vignot_p / total_exprimes * 100 if total_exprimes > 0 else 0
+    score_fagaut = total_fagaut / total_exprimes * 100 if total_exprimes > 0 else 0
+    ecart_global = score_proj - score_fagaut
+
+    bv_en_tete_actuel = int(df_analysis['VIGNOT_EN_TETE_ACTUEL'].sum())
+    bv_en_tete_proj   = int(df_analysis['VIGNOT_EN_TETE'].sum())
+    nb_bureaux = len(df_analysis)
+    voix_manquantes = max(0.0, total_fagaut - total_vignot_p)
+
+    # --------------------------------------------------------
+    # KPIs
+    # --------------------------------------------------------
+    st.markdown("### 📊 Résultats globaux projetés")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Score actuel Vignot", f"{score_actuel:.2f}%",
+                  help="Score réel au T1 2026")
+    with c2:
+        st.metric("Score projeté Vignot", f"{score_proj:.2f}%",
+                  delta=f"{score_proj - score_actuel:+.2f} pts")
+    with c3:
+        st.metric("Score Fagaut (inchangé)", f"{score_fagaut:.2f}%")
+    with c4:
+        label_ecart = "✅ Vignot en tête" if ecart_global > 0 else "❌ Vignot en retard"
+        st.metric("Écart Vignot − Fagaut", f"{ecart_global:+.2f}%",
+                  delta=label_ecart,
+                  delta_color="normal" if ecart_global > 0 else "inverse")
+
+    c5, c6, c7 = st.columns(3)
+    with c5:
+        st.metric("Bureaux Vignot en tête (actuel)",
+                  f"{bv_en_tete_actuel} / {nb_bureaux}")
+    with c6:
+        st.metric("Bureaux Vignot en tête (projeté)",
+                  f"{bv_en_tete_proj} / {nb_bureaux}",
+                  delta=f"{bv_en_tete_proj - bv_en_tete_actuel:+d} bureaux")
+    with c7:
+        if voix_manquantes > 0:
+            st.metric("Voix manquantes pour dépasser Fagaut",
+                      f"{int(voix_manquantes):,}",
+                      delta="Insuffisant",
+                      delta_color="inverse")
+        else:
+            st.metric("Avance projetée sur Fagaut",
+                      f"+{int(total_vignot_p - total_fagaut):,} voix",
+                      delta="En tête",
+                      delta_color="normal")
+
+    # --------------------------------------------------------
+    # Onglets de visualisation
+    # --------------------------------------------------------
+    st.markdown("---")
+    map_center = _map_center_from_geojson(geojson_enriched)
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗺️ Carte score projeté",
+        "⚔️ Carte Vignot vs Fagaut",
+        "📊 Résultats globaux",
+        "📋 Bureaux pivots"
+    ])
+
+    # --- Tab 1 : Score projeté Vignot ---
+    with tab1:
+        st.markdown(f"**Score projeté d'Anne Vignot avec {taux_pct}% de report Véziès + Friess**")
+        locations, z_proj, hovers = [], [], []
+        for _, row in df_analysis.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations.append(num)
+            z_proj.append(row['PCT_VIGNOT_PROJ'])
+            hovers.append(
+                f"<b>Bureau {num}</b><br><br>"
+                f"<b>Anne Vignot :</b><br>"
+                f"Score T1 réel : {row['PCT_VIGNOT']:.2f}%<br>"
+                f"Voix reportées : +{int(row['VOIX_REPORT'])}<br>"
+                f"<b>Score projeté : {row['PCT_VIGNOT_PROJ']:.2f}%</b><br><br>"
+                f"<b>Ludovic Fagaut :</b> {row['PCT_FAGAUT']:.2f}%<br>"
+                f"<b>Écart projeté : {row['ECART_PROJ']:+.2f}%</b>"
+            )
+
+        fig1 = go.Figure(go.Choroplethmapbox(
+            geojson=geojson_enriched,
+            locations=locations,
+            z=z_proj,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale='Greens',
+            zmin=0,
+            text=hovers,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Score<br>projeté (%)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig1.update_layout(
+            mapbox=dict(style='open-street-map', center=map_center, zoom=11.5),
+            title=dict(
+                text=f'<b>Score projeté Anne Vignot — Report {taux_pct}% Véziès + Friess</b>',
+                x=0.5, xanchor='center'
+            ),
+            height=700, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        st.plotly_chart(fig1, use_container_width=True, key='transfer_map_proj')
+
+    # --- Tab 2 : Duel Vignot vs Fagaut ---
+    with tab2:
+        st.markdown("**Vert : Vignot en tête (projeté) — Rouge : Fagaut en tête**")
+        locations2, z_ecart, hovers2 = [], [], []
+        for _, row in df_analysis.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations2.append(num)
+            z_ecart.append(row['ECART_PROJ'])
+            vainqueur = "✅ Vignot" if row['VIGNOT_EN_TETE'] else "❌ Fagaut"
+            hovers2.append(
+                f"<b>Bureau {num}</b><br><br>"
+                f"<b>Résultat projeté : {vainqueur}</b><br><br>"
+                f"Vignot projeté : {row['PCT_VIGNOT_PROJ']:.2f}%<br>"
+                f"Fagaut : {row['PCT_FAGAUT']:.2f}%<br>"
+                f"<b>Écart : {row['ECART_PROJ']:+.2f}%</b>"
+            )
+
+        fig2 = go.Figure(go.Choroplethmapbox(
+            geojson=geojson_enriched,
+            locations=locations2,
+            z=z_ecart,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=[[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],
+            zmid=0,
+            text=hovers2,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Écart V−F<br>(pts %)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig2.update_layout(
+            mapbox=dict(style='open-street-map', center=map_center, zoom=11.5),
+            title=dict(
+                text=f'<b>Vignot vs Fagaut — Report {taux_pct}% (Vert = Vignot en tête)</b>',
+                x=0.5, xanchor='center'
+            ),
+            height=700, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        st.plotly_chart(fig2, use_container_width=True, key='transfer_map_duel')
+
+    # --- Tab 3 : Bar chart global ---
+    with tab3:
+        st.markdown("**Comparaison des votes totaux — Résultats réels vs projetés**")
+
+        # Construire le tableau global
+        all_candidats = df_candidates.groupby('CANDIDAT')['VOIX'].sum().sort_values(ascending=True)
+        names = list(all_candidats.index)
+        voix = list(all_candidats.values)
+        colors = ['#4daf4a' if n == NOM_VIGNOT else '#377eb8' if n == NOM_FAGAUT
+                  else '#bdbdbd' for n in names]
+
+        fig3 = go.Figure()
+        # Barres réelles
+        fig3.add_trace(go.Bar(
+            name='Voix réelles',
+            x=voix, y=names,
+            orientation='h',
+            marker_color=colors,
+            opacity=0.55,
+            text=[f"{v:,}" for v in voix],
+            textposition='auto',
+        ))
+        # Barre projetée Vignot uniquement
+        voix_proj_list = []
+        for n in names:
+            if n == NOM_VIGNOT:
+                voix_proj_list.append(int(total_vignot_p))
+            else:
+                voix_proj_list.append(0)
+
+        fig3.add_trace(go.Bar(
+            name=f'Vignot projeté (+{taux_pct}% report)',
+            x=voix_proj_list, y=names,
+            orientation='h',
+            marker_color=['#1a7a1a' if n == NOM_VIGNOT else 'rgba(0,0,0,0)' for n in names],
+            text=[f"{int(total_vignot_p):,}" if n == NOM_VIGNOT else '' for n in names],
+            textposition='outside',
+        ))
+
+        # Ligne verticale pour Fagaut
+        fig3.add_vline(
+            x=total_fagaut, line_dash='dash', line_color='#377eb8',
+            annotation_text=f"Fagaut : {int(total_fagaut):,}",
+            annotation_position="top right"
+        )
+
+        fig3.update_layout(
+            barmode='overlay',
+            title=dict(text='<b>Votes totaux à Besançon — T1 2026</b>', x=0.5, xanchor='center'),
+            xaxis_title='Nombre de voix',
+            height=420,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        )
+        st.plotly_chart(fig3, use_container_width=True, key='transfer_bar_global')
+
+        # Résumé chiffré
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.info(
+                f"**Sources du report projeté :**\n"
+                f"- Séverine Véziès : {int(total_veziès):,} voix × {taux_pct}% = **+{int(total_veziès * taux):,}**\n"
+                f"- Nicole Friess : {int(total_friess):,} voix × {taux_pct}% = **+{int(total_friess * taux):,}**\n"
+                f"- **Total reporté : +{int(total_report):,} voix**"
+            )
+        with col_b:
+            if voix_manquantes > 0:
+                pct_manquant = voix_manquantes / (total_veziès + total_friess) * 100 if (total_veziès + total_friess) > 0 else 0
+                st.warning(
+                    f"Il manquerait **{int(voix_manquantes):,} voix** à Vignot.\n"
+                    f"Cela nécessiterait un report de **{pct_manquant + taux_pct:.0f}%** de Véziès + Friess."
+                )
+            else:
+                st.success(
+                    f"Avec {taux_pct}% de report, Vignot dépasserait Fagaut de "
+                    f"**{int(total_vignot_p - total_fagaut):,} voix** ({ecart_global:+.2f}%)."
+                )
+
+    # --- Tab 4 : Bureaux pivots ---
+    with tab4:
+        st.markdown(
+            "**Bureaux pivots** : bureaux où l'écart projeté Vignot−Fagaut est le plus serré "
+            "(±5 points) — les plus susceptibles de basculer selon le taux réel de report."
+        )
+        df_pivots = df_analysis[df_analysis['ECART_PROJ'].abs() <= 5].copy()
+        df_pivots = df_pivots.sort_values('ECART_PROJ')
+
+        if df_pivots.empty:
+            st.info("Aucun bureau avec un écart inférieur à 5 points au taux de report sélectionné.")
+        else:
+            df_display = df_pivots[[
+                'NUM_BUREAU', 'EXPRIMES',
+                'PCT_VIGNOT', 'PCT_VIGNOT_PROJ', 'VOIX_REPORT',
+                'PCT_FAGAUT', 'ECART_PROJ'
+            ]].copy()
+            df_display.columns = [
+                'Bureau', 'Exprimés',
+                'Vignot réel (%)', 'Vignot projeté (%)', 'Voix reportées',
+                'Fagaut (%)', 'Écart V−F (pts)'
+            ]
+            df_display['Voix reportées'] = df_display['Voix reportées'].astype(int)
+            st.dataframe(
+                df_display.style
+                .format({
+                    'Vignot réel (%)': '{:.2f}',
+                    'Vignot projeté (%)': '{:.2f}',
+                    'Fagaut (%)': '{:.2f}',
+                    'Écart V−F (pts)': '{:+.2f}',
+                })
+                .applymap(
+                    lambda v: 'color: #1a9850' if isinstance(v, float) and v > 0 else
+                              ('color: #d73027' if isinstance(v, float) and v < 0 else ''),
+                    subset=['Écart V−F (pts)']
+                ),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(f"{len(df_pivots)} bureau(x) dans une marge de ±5 points.")
+
+
+def render_vote_transfer_analysis_fagaut(df_candidates: pd.DataFrame, geojson_enriched: Dict):
+    """
+    Visualisation interactive du report de voix de Jacques Ricciardetti et Eric Delabrousse
+    vers Ludovic Fagaut au second tour de 2026.
+
+    Un slider permet d'ajuster le taux de report (0–100 %) et recalcule en temps réel
+    les scores projetés bureau par bureau.
+    """
+    st.subheader("🔁 Simulation de report de voix — Ricciardetti & Delabrousse → Fagaut")
+    st.caption(
+        "Cette simulation estime le score de Ludovic Fagaut au second tour en supposant "
+        "qu'un certain pourcentage des voix de Jacques Ricciardetti et d'Eric Delabrousse "
+        "se reporterait en sa faveur."
+    )
+
+    NOM_FAGAUT = 'Ludovic Fagaut'
+    NOM_VIGNOT = 'Anne Vignot'
+    NOM_RICCIARDETTI = 'Jacques Ricciardetti'
+    NOM_DELABROUSSE = 'Eric Delabrousse'
+
+    candidats_dispo = set(df_candidates['CANDIDAT'].unique())
+    if not {NOM_FAGAUT, NOM_VIGNOT}.issubset(candidats_dispo):
+        st.warning("Données insuffisantes pour cette analyse (Fagaut ou Vignot absent).")
+        return
+
+    # --------------------------------------------------------
+    # Construction du DataFrame de base bureau × candidat
+    # --------------------------------------------------------
+    bureaux_base = (
+        df_candidates.groupby('NUM_BUREAU')
+        .first()[['INSCRITS', 'VOTANTS', 'EXPRIMES']]
+        .reset_index()
+    )
+
+    def _voix_bureau(nom, alias):
+        sub = df_candidates[df_candidates['CANDIDAT'] == nom][
+            ['NUM_BUREAU', 'VOIX', 'POURCENTAGE_EXPRIMES']
+        ].copy()
+        sub.columns = ['NUM_BUREAU', f'VOIX_{alias}', f'PCT_{alias}']
+        return sub
+
+    df_analysis = bureaux_base.copy()
+    df_analysis = df_analysis.merge(_voix_bureau(NOM_FAGAUT, 'FAGAUT'), on='NUM_BUREAU', how='left')
+    df_analysis = df_analysis.merge(_voix_bureau(NOM_VIGNOT, 'VIGNOT'), on='NUM_BUREAU', how='left')
+
+    if NOM_RICCIARDETTI in candidats_dispo:
+        df_analysis = df_analysis.merge(_voix_bureau(NOM_RICCIARDETTI, 'RICC'), on='NUM_BUREAU', how='left')
+    else:
+        df_analysis['VOIX_RICC'] = 0; df_analysis['PCT_RICC'] = 0.0
+
+    if NOM_DELABROUSSE in candidats_dispo:
+        df_analysis = df_analysis.merge(_voix_bureau(NOM_DELABROUSSE, 'DELA'), on='NUM_BUREAU', how='left')
+    else:
+        df_analysis['VOIX_DELA'] = 0; df_analysis['PCT_DELA'] = 0.0
+
+    df_analysis = df_analysis.fillna(0)
+
+    # --------------------------------------------------------
+    # Slider de taux de report
+    # --------------------------------------------------------
+    taux_pct = st.slider(
+        "Taux de report Ricciardetti + Delabrousse → Fagaut (%)",
+        min_value=0, max_value=100, value=50, step=5,
+        help="50 % signifie que la moitié des voix de Ricciardetti et Delabrousse se reportent sur Fagaut.",
+        key="slider_fagaut_transfer"
+    )
+    taux = taux_pct / 100.0
+
+    # --------------------------------------------------------
+    # Calculs projetés
+    # --------------------------------------------------------
+    df_analysis['VOIX_REPORT'] = (df_analysis['VOIX_RICC'] + df_analysis['VOIX_DELA']) * taux
+    df_analysis['VOIX_FAGAUT_PROJ'] = df_analysis['VOIX_FAGAUT'] + df_analysis['VOIX_REPORT']
+    df_analysis['PCT_FAGAUT_PROJ'] = df_analysis.apply(
+        lambda r: r['VOIX_FAGAUT_PROJ'] / r['EXPRIMES'] * 100 if r['EXPRIMES'] > 0 else 0.0, axis=1
+    )
+    df_analysis['ECART_PROJ'] = df_analysis['PCT_FAGAUT_PROJ'] - df_analysis['PCT_VIGNOT']
+    df_analysis['FAGAUT_EN_TETE'] = df_analysis['ECART_PROJ'] > 0
+    df_analysis['FAGAUT_EN_TETE_ACTUEL'] = df_analysis['PCT_FAGAUT'] > df_analysis['PCT_VIGNOT']
+
+    # Totaux
+    total_exprimes   = df_analysis['EXPRIMES'].sum()
+    total_fagaut     = df_analysis['VOIX_FAGAUT'].sum()
+    total_vignot     = df_analysis['VOIX_VIGNOT'].sum()
+    total_ricc       = df_analysis['VOIX_RICC'].sum()
+    total_dela       = df_analysis['VOIX_DELA'].sum()
+    total_report     = (total_ricc + total_dela) * taux
+    total_fagaut_p   = total_fagaut + total_report
+
+    score_actuel  = total_fagaut / total_exprimes * 100 if total_exprimes > 0 else 0
+    score_proj    = total_fagaut_p / total_exprimes * 100 if total_exprimes > 0 else 0
+    score_vignot  = total_vignot / total_exprimes * 100 if total_exprimes > 0 else 0
+    ecart_global  = score_proj - score_vignot
+
+    bv_en_tete_actuel = int(df_analysis['FAGAUT_EN_TETE_ACTUEL'].sum())
+    bv_en_tete_proj   = int(df_analysis['FAGAUT_EN_TETE'].sum())
+    nb_bureaux = len(df_analysis)
+    voix_avance = total_fagaut_p - total_vignot  # always positive (Fagaut leads T1)
+
+    # --------------------------------------------------------
+    # KPIs
+    # --------------------------------------------------------
+    st.markdown("### 📊 Résultats globaux projetés")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Score actuel Fagaut", f"{score_actuel:.2f}%",
+                  help="Score réel au T1 2026")
+    with c2:
+        st.metric("Score projeté Fagaut", f"{score_proj:.2f}%",
+                  delta=f"{score_proj - score_actuel:+.2f} pts")
+    with c3:
+        st.metric("Score Vignot (inchangé)", f"{score_vignot:.2f}%")
+    with c4:
+        label_ecart = "✅ Fagaut en tête" if ecart_global > 0 else "❌ Fagaut en retard"
+        st.metric("Écart Fagaut − Vignot", f"{ecart_global:+.2f}%",
+                  delta=label_ecart,
+                  delta_color="normal" if ecart_global > 0 else "inverse")
+
+    c5, c6, c7 = st.columns(3)
+    with c5:
+        st.metric("Bureaux Fagaut en tête (actuel)",
+                  f"{bv_en_tete_actuel} / {nb_bureaux}")
+    with c6:
+        st.metric("Bureaux Fagaut en tête (projeté)",
+                  f"{bv_en_tete_proj} / {nb_bureaux}",
+                  delta=f"{bv_en_tete_proj - bv_en_tete_actuel:+d} bureaux")
+    with c7:
+        st.metric("Avance projetée sur Vignot",
+                  f"+{int(voix_avance):,} voix",
+                  delta="En tête",
+                  delta_color="normal")
+
+    # --------------------------------------------------------
+    # Onglets de visualisation
+    # --------------------------------------------------------
+    st.markdown("---")
+    map_center = _map_center_from_geojson(geojson_enriched)
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗺️ Carte score projeté",
+        "⚔️ Carte Fagaut vs Vignot",
+        "📊 Résultats globaux",
+        "📋 Bureaux pivots"
+    ])
+
+    # --- Tab 1 : Score projeté Fagaut ---
+    with tab1:
+        st.markdown(f"**Score projeté de Ludovic Fagaut avec {taux_pct}% de report Ricciardetti + Delabrousse**")
+        locations, z_proj, hovers = [], [], []
+        for _, row in df_analysis.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations.append(num)
+            z_proj.append(row['PCT_FAGAUT_PROJ'])
+            hovers.append(
+                f"<b>Bureau {num}</b><br><br>"
+                f"<b>Ludovic Fagaut :</b><br>"
+                f"Score T1 réel : {row['PCT_FAGAUT']:.2f}%<br>"
+                f"Voix reportées : +{int(row['VOIX_REPORT'])}<br>"
+                f"<b>Score projeté : {row['PCT_FAGAUT_PROJ']:.2f}%</b><br><br>"
+                f"<b>Anne Vignot :</b> {row['PCT_VIGNOT']:.2f}%<br>"
+                f"<b>Écart projeté : {row['ECART_PROJ']:+.2f}%</b>"
+            )
+
+        fig1 = go.Figure(go.Choroplethmapbox(
+            geojson=geojson_enriched,
+            locations=locations,
+            z=z_proj,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale='Blues',
+            zmin=0,
+            text=hovers,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Score<br>projeté (%)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig1.update_layout(
+            mapbox=dict(style='open-street-map', center=map_center, zoom=11.5),
+            title=dict(
+                text=f'<b>Score projeté Ludovic Fagaut — Report {taux_pct}% Ricciardetti + Delabrousse</b>',
+                x=0.5, xanchor='center'
+            ),
+            height=700, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        st.plotly_chart(fig1, use_container_width=True, key='fagaut_transfer_map_proj')
+
+    # --- Tab 2 : Duel Fagaut vs Vignot ---
+    with tab2:
+        st.markdown("**Bleu : Fagaut en tête (projeté) — Rouge : Vignot en tête**")
+        locations2, z_ecart, hovers2 = [], [], []
+        for _, row in df_analysis.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations2.append(num)
+            z_ecart.append(row['ECART_PROJ'])
+            vainqueur = "✅ Fagaut" if row['FAGAUT_EN_TETE'] else "❌ Vignot"
+            hovers2.append(
+                f"<b>Bureau {num}</b><br><br>"
+                f"<b>Résultat projeté : {vainqueur}</b><br><br>"
+                f"Fagaut projeté : {row['PCT_FAGAUT_PROJ']:.2f}%<br>"
+                f"Vignot : {row['PCT_VIGNOT']:.2f}%<br>"
+                f"<b>Écart : {row['ECART_PROJ']:+.2f}%</b>"
+            )
+
+        fig2 = go.Figure(go.Choroplethmapbox(
+            geojson=geojson_enriched,
+            locations=locations2,
+            z=z_ecart,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=[[0, '#d73027'], [0.5, '#ffffbf'], [1, '#2166ac']],
+            zmid=0,
+            text=hovers2,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Écart F−V<br>(pts %)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig2.update_layout(
+            mapbox=dict(style='open-street-map', center=map_center, zoom=11.5),
+            title=dict(
+                text=f'<b>Fagaut vs Vignot — Report {taux_pct}% (Bleu = Fagaut en tête)</b>',
+                x=0.5, xanchor='center'
+            ),
+            height=700, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        st.plotly_chart(fig2, use_container_width=True, key='fagaut_transfer_map_duel')
+
+    # --- Tab 3 : Bar chart global ---
+    with tab3:
+        st.markdown("**Comparaison des votes totaux — Résultats réels vs projetés**")
+
+        all_candidats = df_candidates.groupby('CANDIDAT')['VOIX'].sum().sort_values(ascending=True)
+        names = list(all_candidats.index)
+        voix = list(all_candidats.values)
+        colors = ['#377eb8' if n == NOM_FAGAUT else '#4daf4a' if n == NOM_VIGNOT
+                  else '#bdbdbd' for n in names]
+
+        fig3 = go.Figure()
+        fig3.add_trace(go.Bar(
+            name='Voix réelles',
+            x=voix, y=names,
+            orientation='h',
+            marker_color=colors,
+            opacity=0.55,
+            text=[f"{v:,}" for v in voix],
+            textposition='auto',
+        ))
+
+        voix_proj_list = []
+        for n in names:
+            if n == NOM_FAGAUT:
+                voix_proj_list.append(int(total_fagaut_p))
+            else:
+                voix_proj_list.append(0)
+
+        fig3.add_trace(go.Bar(
+            name=f'Fagaut projeté (+{taux_pct}% report)',
+            x=voix_proj_list, y=names,
+            orientation='h',
+            marker_color=['#0c3d6e' if n == NOM_FAGAUT else 'rgba(0,0,0,0)' for n in names],
+            text=[f"{int(total_fagaut_p):,}" if n == NOM_FAGAUT else '' for n in names],
+            textposition='outside',
+        ))
+
+        fig3.add_vline(
+            x=total_vignot, line_dash='dash', line_color='#4daf4a',
+            annotation_text=f"Vignot : {int(total_vignot):,}",
+            annotation_position="top right"
+        )
+
+        fig3.update_layout(
+            barmode='overlay',
+            title=dict(text='<b>Votes totaux à Besançon — T1 2026</b>', x=0.5, xanchor='center'),
+            xaxis_title='Nombre de voix',
+            height=420,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        )
+        st.plotly_chart(fig3, use_container_width=True, key='fagaut_transfer_bar_global')
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.info(
+                f"**Sources du report projeté :**\n"
+                f"- Jacques Ricciardetti : {int(total_ricc):,} voix × {taux_pct}% = **+{int(total_ricc * taux):,}**\n"
+                f"- Eric Delabrousse : {int(total_dela):,} voix × {taux_pct}% = **+{int(total_dela * taux):,}**\n"
+                f"- **Total reporté : +{int(total_report):,} voix**"
+            )
+        with col_b:
+            st.success(
+                f"Avec {taux_pct}% de report, Fagaut dépasserait Vignot de "
+                f"**{int(voix_avance):,} voix** ({ecart_global:+.2f}%)."
+            )
+
+    # --- Tab 4 : Bureaux pivots ---
+    with tab4:
+        st.markdown(
+            "**Bureaux pivots** : bureaux où l'écart projeté Fagaut−Vignot est le plus serré "
+            "(±5 points) — les plus susceptibles de basculer selon le taux réel de report."
+        )
+        df_pivots = df_analysis[df_analysis['ECART_PROJ'].abs() <= 5].copy()
+        df_pivots = df_pivots.sort_values('ECART_PROJ')
+
+        if df_pivots.empty:
+            st.info("Aucun bureau avec un écart inférieur à 5 points au taux de report sélectionné.")
+        else:
+            df_display = df_pivots[[
+                'NUM_BUREAU', 'EXPRIMES',
+                'PCT_FAGAUT', 'PCT_FAGAUT_PROJ', 'VOIX_REPORT',
+                'PCT_VIGNOT', 'ECART_PROJ'
+            ]].copy()
+            df_display.columns = [
+                'Bureau', 'Exprimés',
+                'Fagaut réel (%)', 'Fagaut projeté (%)', 'Voix reportées',
+                'Vignot (%)', 'Écart F−V (pts)'
+            ]
+            df_display['Voix reportées'] = df_display['Voix reportées'].astype(int)
+            st.dataframe(
+                df_display.style
+                .format({
+                    'Fagaut réel (%)': '{:.2f}',
+                    'Fagaut projeté (%)': '{:.2f}',
+                    'Vignot (%)': '{:.2f}',
+                    'Écart F−V (pts)': '{:+.2f}',
+                })
+                .applymap(
+                    lambda v: 'color: #2166ac' if isinstance(v, float) and v > 0 else
+                              ('color: #d73027' if isinstance(v, float) and v < 0 else ''),
+                    subset=['Écart F−V (pts)']
+                ),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(f"{len(df_pivots)} bureau(x) dans une marge de ±5 points.")
+
+
+# =============================================================================
 # COMPARAISON INTER-ÉLECTIONS : T1 2020 vs T1 2026
 # =============================================================================
 
@@ -1432,7 +2138,8 @@ def render_inter_election_comparison_visualization(
     candidats = list(inter_viz.COMMON_CANDIDATES.keys())
 
     tab_labels = [f"🔀 {c.split()[-1]}" for c in candidats]
-    tab_labels.append("📊 Vue d'ensemble")
+    tab_labels.append("�️ Participation")
+    tab_labels.append("�📊 Vue d'ensemble")
     tabs = st.tabs(tab_labels)
 
     for i, candidat in enumerate(candidats):
@@ -1457,6 +2164,89 @@ def render_inter_election_comparison_visualization(
                 fig_scatter = inter_viz.create_scatter_2020_vs_2026(candidat)
                 st.plotly_chart(fig_scatter, use_container_width=True,
                                 key=f'inter_scatter_{candidat}')
+
+    # Onglet participation
+    with tabs[-2]:
+        st.markdown("### 🗳️ Participation — T1 2020 vs T1 2026")
+
+        df_part = inter_viz.get_participation_data()
+        total_inscrits_2020 = int(df_part['INSCRITS_2020'].sum())
+        total_inscrits_2026 = int(df_part['INSCRITS_2026'].sum())
+        total_votants_2020  = int(df_part['VOTANTS_2020'].sum())
+        total_votants_2026  = int(df_part['VOTANTS_2026'].sum())
+        taux_2020 = total_votants_2020 / total_inscrits_2020 * 100 if total_inscrits_2020 > 0 else 0
+        taux_2026 = total_votants_2026 / total_inscrits_2026 * 100 if total_inscrits_2026 > 0 else 0
+        evol_global = taux_2026 - taux_2020
+        bv_hausse = int((df_part['EVOLUTION_ABS'] > 0).sum())
+        bv_baisse = int((df_part['EVOLUTION_ABS'] < 0).sum())
+
+        kc1, kc2, kc3, kc4 = st.columns(4)
+        with kc1:
+            st.metric("Participation 2020", f"{taux_2020:.2f}%",
+                      help=f"{total_votants_2020:,} votants / {total_inscrits_2020:,} inscrits")
+        with kc2:
+            st.metric("Participation 2026", f"{taux_2026:.2f}%",
+                      delta=f"{evol_global:+.2f} pts",
+                      help=f"{total_votants_2026:,} votants / {total_inscrits_2026:,} inscrits")
+        with kc3:
+            st.metric("Bureaux en hausse", f"{bv_hausse} / {len(df_part)}")
+        with kc4:
+            st.metric("Bureaux en baisse", f"{bv_baisse} / {len(df_part)}")
+
+        st.markdown("---")
+        ptab1, ptab2, ptab3, ptab4 = st.tabs([
+            "🗺️ Carte évolution",
+            "🗺️ Cartes 2020 / 2026",
+            "📊 Barres par bureau",
+            "🔵 Scatter 2020 vs 2026"
+        ])
+
+        with ptab1:
+            fig_pevo = inter_viz.create_participation_evolution_map()
+            st.plotly_chart(fig_pevo, use_container_width=True, key='part_evo_map')
+
+        with ptab2:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                fig_p2020 = inter_viz.create_participation_absolute_map(2020)
+                fig_p2020.update_layout(height=500)
+                st.plotly_chart(fig_p2020, use_container_width=True, key='part_abs_map_2020')
+            with col_b:
+                fig_p2026 = inter_viz.create_participation_absolute_map(2026)
+                fig_p2026.update_layout(height=500)
+                st.plotly_chart(fig_p2026, use_container_width=True, key='part_abs_map_2026')
+
+        with ptab3:
+            fig_pbars = inter_viz.create_participation_bars_chart(n=20)
+            st.plotly_chart(fig_pbars, use_container_width=True, key='part_bars')
+
+        with ptab4:
+            fig_pscatter = inter_viz.create_participation_scatter()
+            st.plotly_chart(fig_pscatter, use_container_width=True, key='part_scatter')
+
+        # Tableau détaillé
+        with st.expander("📋 Tableau détaillé par bureau de vote"):
+            df_display = df_part.copy()
+            df_display.columns = [
+                'Bureau', 'Inscrits 2020', 'Votants 2020', 'Participation 2020 (%)',
+                'Inscrits 2026', 'Votants 2026', 'Participation 2026 (%)',
+                'Évolution (pts)', 'Évolution (%)'
+            ]
+            st.dataframe(
+                df_display.style
+                .format({
+                    'Participation 2020 (%)': '{:.2f}',
+                    'Participation 2026 (%)': '{:.2f}',
+                    'Évolution (pts)': '{:+.2f}',
+                    'Évolution (%)': '{:+.1f}',
+                })
+                .applymap(
+                    lambda v: 'color: #1a9850' if isinstance(v, float) and v > 0 else
+                              ('color: #d73027' if isinstance(v, float) and v < 0 else ''),
+                    subset=['Évolution (pts)']
+                ),
+                use_container_width=True, hide_index=True,
+            )
 
     # Onglet vue d'ensemble : cartes scores côte à côte pour tous les candidats
     with tabs[-1]:

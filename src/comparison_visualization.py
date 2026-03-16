@@ -1082,5 +1082,199 @@ class InterElectionComparisonVisualizer:
             height=550,
         )
         return fig
-        
+
+    # ------------------------------------------------------------------
+    # PARTICIPATION
+    # ------------------------------------------------------------------
+
+    def get_participation_data(self) -> pd.DataFrame:
+        """
+        Retourne un DataFrame par bureau avec les taux de participation 2020 et 2026,
+        et l'évolution absolue entre les deux tours.
+        Colonnes : NUM_BUREAU, INSCRITS_2020, VOTANTS_2020, PARTICIPATION_2020,
+                   INSCRITS_2026, VOTANTS_2026, PARTICIPATION_2026,
+                   EVOLUTION_ABS, EVOLUTION_REL
+        """
+        b20 = (
+            self.df_2020.groupby('NUM_BUREAU')
+            .first()[['INSCRITS', 'VOTANTS', 'TAUX_ABSTENTION']]
+            .reset_index()
+        )
+        b20['PARTICIPATION_2020'] = 100 - b20['TAUX_ABSTENTION']
+        b20 = b20.rename(columns={'INSCRITS': 'INSCRITS_2020', 'VOTANTS': 'VOTANTS_2020'})
+        b20 = b20[['NUM_BUREAU', 'INSCRITS_2020', 'VOTANTS_2020', 'PARTICIPATION_2020']]
+
+        b26 = (
+            self.df_2026.groupby('NUM_BUREAU')
+            .first()[['INSCRITS', 'VOTANTS', 'TAUX_ABSTENTION']]
+            .reset_index()
+        )
+        b26['PARTICIPATION_2026'] = 100 - b26['TAUX_ABSTENTION']
+        b26 = b26.rename(columns={'INSCRITS': 'INSCRITS_2026', 'VOTANTS': 'VOTANTS_2026'})
+        b26 = b26[['NUM_BUREAU', 'INSCRITS_2026', 'VOTANTS_2026', 'PARTICIPATION_2026']]
+
+        merged = b20.merge(b26, on='NUM_BUREAU', how='inner')
+        merged['EVOLUTION_ABS'] = merged['PARTICIPATION_2026'] - merged['PARTICIPATION_2020']
+        merged['EVOLUTION_REL'] = (
+            merged['PARTICIPATION_2026'] / merged['PARTICIPATION_2020'].replace(0, np.nan) - 1
+        ) * 100
+        return merged.sort_values('NUM_BUREAU').reset_index(drop=True)
+
+    def create_participation_evolution_map(self) -> go.Figure:
+        """
+        Carte choroplèthe de l'évolution du taux de participation 2020 → 2026.
+        Gradient : rouge (baisse) → blanc → vert (hausse).
+        """
+        df = self.get_participation_data()
+
+        locations, z_values, hover_texts = [], [], []
+        for _, row in df.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations.append(num)
+            z_values.append(row['EVOLUTION_ABS'])
+            hover_texts.append(
+                f"<b>Bureau {num}</b><br><br>"
+                f"<b>Participation :</b><br>"
+                f"2020 : {row['PARTICIPATION_2020']:.2f}% ({int(row['VOTANTS_2020'])} / {int(row['INSCRITS_2020'])})<br>"
+                f"2026 : {row['PARTICIPATION_2026']:.2f}% ({int(row['VOTANTS_2026'])} / {int(row['INSCRITS_2026'])})<br>"
+                f"<b>Évolution : {row['EVOLUTION_ABS']:+.2f} pts</b>"
+            )
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=self.geojson_2026,
+            locations=locations,
+            z=z_values,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=[[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],
+            zmid=0,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Évolution<br>participation<br>(pts %)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(
+                text='<b>Évolution de la participation — T1 2020 → T1 2026</b>',
+                x=0.5, xanchor='center'
+            ),
+            height=700,
+            margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_participation_absolute_map(self, year: int) -> go.Figure:
+        """Carte du taux de participation absolu pour une année donnée (2020 ou 2026)."""
+        df = self.get_participation_data()
+        col = f'PARTICIPATION_{year}'
+        votants_col = f'VOTANTS_{year}'
+        inscrits_col = f'INSCRITS_{year}'
+        geojson = self.geojson_2020 if year == 2020 else self.geojson_2026
+
+        locations, z_values, hover_texts = [], [], []
+        for _, row in df.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations.append(num)
+            z_values.append(row[col])
+            hover_texts.append(
+                f"<b>Bureau {num}</b><br>"
+                f"Participation {year} : {row[col]:.2f}%<br>"
+                f"Votants : {int(row[votants_col])} / {int(row[inscrits_col])}"
+            )
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=geojson,
+            locations=locations,
+            z=z_values,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale='RdYlGn',
+            zmin=0, zmax=100,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title=f"Participation<br>{year} (%)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(
+                text=f'<b>Taux de participation T1 {year}</b>',
+                x=0.5, xanchor='center'
+            ),
+            height=700,
+            margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_participation_bars_chart(self, n: int = 20) -> go.Figure:
+        """Bar chart horizontal des n bureaux avec les plus fortes variations de participation."""
+        df = self.get_participation_data().sort_values('EVOLUTION_ABS')
+        top_n = pd.concat([df.head(n // 2), df.tail(n - n // 2)]).drop_duplicates()
+
+        colors = ['#d73027' if v < 0 else '#1a9850' for v in top_n['EVOLUTION_ABS']]
+
+        fig = go.Figure(go.Bar(
+            x=top_n['EVOLUTION_ABS'].round(2),
+            y=top_n['NUM_BUREAU'].astype(str),
+            orientation='h',
+            marker_color=colors,
+            text=[f"{v:+.1f}%" for v in top_n['EVOLUTION_ABS']],
+            textposition='outside',
+            hovertemplate=(
+                "<b>Bureau %{y}</b><br>"
+                "Participation 2020 : %{customdata[0]:.2f}%<br>"
+                "Participation 2026 : %{customdata[1]:.2f}%<br>"
+                "Évolution : %{x:+.2f} pts<extra></extra>"
+            ),
+            customdata=top_n[['PARTICIPATION_2020', 'PARTICIPATION_2026']].values,
+        ))
+        fig.update_layout(
+            title='<b>Évolutions de participation par bureau (T1 2020 → T1 2026)</b>',
+            xaxis_title="Évolution (points %)",
+            yaxis_title="Bureau de vote",
+            height=max(400, len(top_n) * 22),
+            xaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='gray'),
+        )
+        return fig
+
+    def create_participation_scatter(self) -> go.Figure:
+        """Scatter plot participation 2020 vs 2026 par bureau."""
+        df = self.get_participation_data()
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df['PARTICIPATION_2020'],
+            y=df['PARTICIPATION_2026'],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=df['EVOLUTION_ABS'],
+                colorscale=[[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],
+                cmid=0,
+                showscale=True,
+                colorbar=dict(title='Évolution<br>(pts)'),
+            ),
+            text=[
+                f"Bureau {int(b)}<br>2020 : {p20:.2f}%<br>2026 : {p26:.2f}%<br>Évol : {e:+.2f} pts"
+                for b, p20, p26, e in zip(
+                    df['NUM_BUREAU'], df['PARTICIPATION_2020'],
+                    df['PARTICIPATION_2026'], df['EVOLUTION_ABS'])
+            ],
+            hovertemplate='%{text}<extra></extra>',
+        ))
+        vmax = max(df['PARTICIPATION_2020'].max(), df['PARTICIPATION_2026'].max()) * 1.05
+        fig.add_trace(go.Scatter(
+            x=[0, vmax], y=[0, vmax],
+            mode='lines', line=dict(color='gray', dash='dash'),
+            name='Pas de changement', showlegend=True,
+        ))
+        fig.update_layout(
+            title='<b>Participation — 2020 vs 2026 par bureau de vote</b>',
+            xaxis_title='Taux de participation T1 2020 (%)',
+            yaxis_title='Taux de participation T1 2026 (%)',
+            height=550,
+        )
         return fig

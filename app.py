@@ -16,6 +16,8 @@ from src.streamlit_app import (
     render_comparison_visualization,
     render_inter_election_comparison_dashboard,
     render_inter_election_comparison_visualization,
+    render_vote_transfer_analysis,
+    render_vote_transfer_analysis_fagaut,
     initialize_session_state,
     render_export_section
 )
@@ -252,6 +254,15 @@ def main():
                 geojson_enriched=geojson_enriched,
                 filters=filters
             )
+
+        # 3. Analyse spécifique T1 2026 : simulation de report de voix
+        if tour_mode == '2026_t1':
+            st.divider()
+            with st.container():
+                render_vote_transfer_analysis(df_candidates, geojson_enriched)
+            st.divider()
+            with st.container():
+                render_vote_transfer_analysis_fagaut(df_candidates, geojson_enriched)
     
     # Footer
     st.divider()
