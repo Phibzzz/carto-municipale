@@ -24,14 +24,13 @@ ELECTIONS_CONFIG = {
         'description': 'Second tour des élections municipales de Besançon',
         'format': 'long'  # Format avec une ligne par bureau
     },
-    # Placeholder pour futures élections
-    # 'europeennes_2024': {
-    #     'label': 'Européennes 2024',
-    #     'date': '2024-06-09',
-    #     'excel_file': '2024-06-09-europeennes.xlsx',
-    #     'description': 'Élections européennes',
-    #     'format': 'wide'
-    # },
+    'municipales_2026_t1': {
+        'label': 'Municipales 2026 - Tour 1',
+        'date': '2026-03-15',
+        'excel_file': 'elections-municipales-1er-tour-resultats-2026.xlsx',
+        'description': 'Premier tour des élections municipales de Besançon 2026',
+        'format': 'besancon_2026'  # Format spécifique : une ligne par bureau, colonnes candidats textuelles
+    },
 }
 
 # Fichiers GeoJSON (communs à toutes les élections)
@@ -145,20 +144,30 @@ VISUALIZATION_MODES = {
 # Modes de sélection de tour
 TOUR_MODES = {
     't1': {
-        'label': '📊 Tour 1',
-        'description': 'Premier tour uniquement',
+        'label': '📊 T1 - 2020',
+        'description': 'Premier tour des élections municipales 2020',
         'election_key': 'municipales_2020_t1'
     },
     't2': {
-        'label': '📊 Tour 2',
-        'description': 'Second tour uniquement',
+        'label': '📊 T2 - 2020',
+        'description': 'Second tour des élections municipales 2020',
         'election_key': 'municipales_2020_t2'
     },
     'comparison': {
-        'label': '🔀 Comparaison T1/T2',
-        'description': 'Comparaison entre les deux tours',
+        'label': '🔀 T1/T2 - 2020',
+        'description': 'Comparaison entre le premier et le second tour 2020',
         'election_keys': ['municipales_2020_t1', 'municipales_2020_t2']
-    }
+    },
+    '2026_t1': {
+        'label': '📊 T1 - 2026',
+        'description': 'Premier tour des élections municipales 2026',
+        'election_key': 'municipales_2026_t1'
+    },
+    'comparison_2020_2026': {
+        'label': '🔀 Évol. 2020→2026',
+        'description': 'Comparaison du premier tour 2020 vs premier tour 2026',
+        'election_keys': ['municipales_2020_t1', 'municipales_2026_t1']
+    },
 }
 
 # Configuration de la carte

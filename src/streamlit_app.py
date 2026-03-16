@@ -16,7 +16,9 @@ from src.config import (
 )
 from src.data_loader import ElectoralDataLoader
 from src.visualization import ElectoralMapVisualizer
-from src.comparison_visualization import TourComparisonVisualizer
+from src.comparison_visualization import TourComparisonVisualizer, InterElectionComparisonVisualizer
+from src.export_manager import ExportManager
+from src.vignot_analysis import VignotAnalyzer
 
 
 def initialize_session_state():
@@ -240,6 +242,124 @@ def render_sidebar(df_candidates: pd.DataFrame, geojson_enriched: Dict, loader: 
             st.rerun()
         
         return filters
+
+
+def render_export_section(
+    df_candidates: pd.DataFrame,
+    loader: ElectoralDataLoader,
+    election_label: str,
+    tour_mode: str = 't1',
+    vignot_analyzer: Optional[VignotAnalyzer] = None
+):
+    """
+    Affiche la section d'export de données dans la sidebar
+    
+    Args:
+        df_candidates: DataFrame des candidats
+        loader: Instance du loader
+        election_label: Label de l'élection
+        tour_mode: Mode du tour ('t1', 't2', 'comparison')
+        vignot_analyzer: Optionnel, analyseur pour T1->T2
+    """
+    with st.sidebar:
+        st.divider()
+        st.subheader("📥 Exports de données")
+        
+        st.caption("Générez des fichiers CSV et la documentation complète des statistiques calculées.")
+        
+        # Bouton principal d'export
+        if st.button("📊 Exporter toutes les statistiques", use_container_width=True, type="primary"):
+            with st.spinner("Génération des exports en cours..."):
+                try:
+                    # Créer le gestionnaire d'exports
+                    export_manager = ExportManager()
+                    
+                    # Exporter tous les fichiers
+                    exports = export_manager.export_all(
+                        df_candidates=df_candidates,
+                        loader=loader,
+                        election_label=election_label,
+                        vignot_analyzer=vignot_analyzer
+                    )
+                    
+                    # Afficher le succès
+                    st.success(f"✅ {len(exports)} fichiers générés avec succès !")
+                    
+                    # Afficher la liste des fichiers
+                    with st.expander("📁 Fichiers générés", expanded=True):
+                        for name, path in exports.items():
+                            st.text(f"• {path.name}")
+                        
+                        st.info(f"📂 Dossier : `{export_manager.export_folder.absolute()}`")
+                    
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de l'export : {str(e)}")
+                    import traceback
+                    st.error(traceback.format_exc())
+        
+        # Options d'export détaillées
+        with st.expander("⚙️ Exports individuels"):
+            st.caption("Exporter des fichiers spécifiques")
+            
+            export_manager = ExportManager()
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("📊 Stats générales", use_container_width=True):
+                    try:
+                        path = export_manager.export_statistiques_generales(
+                            df_candidates, loader, election_label
+                        )
+                        st.success(f"✅ {path.name}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+                
+                if st.button("🏢 Stats bureaux", use_container_width=True):
+                    try:
+                        path = export_manager.export_statistiques_par_bureau(
+                            df_candidates, election_label
+                        )
+                        st.success(f"✅ {path.name}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+                
+                if st.button("👤 Stats candidats", use_container_width=True):
+                    try:
+                        path = export_manager.export_statistiques_par_candidat(
+                            df_candidates, election_label
+                        )
+                        st.success(f"✅ {path.name}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+            
+            with col2:
+                if st.button("📋 Résultats détaillés", use_container_width=True):
+                    try:
+                        path = export_manager.export_resultats_detailles(
+                            df_candidates, election_label
+                        )
+                        st.success(f"✅ {path.name}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+                
+                if vignot_analyzer and st.button("🔄 Évolution T1→T2", use_container_width=True):
+                    try:
+                        path = export_manager.export_evolution_t1_t2(
+                            vignot_analyzer, election_label
+                        )
+                        st.success(f"✅ {path.name}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+                
+                if st.button("📖 Documentation", use_container_width=True):
+                    try:
+                        path = export_manager.generate_documentation_markdown(
+                            df_candidates, loader, election_label, vignot_analyzer
+                        )
+                        st.success(f"✅ {path.name}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
 
 
 def render_statistics_dashboard(df_candidates: pd.DataFrame, loader: ElectoralDataLoader, filters: Dict, tour_mode: str = 't1'):
@@ -1238,3 +1358,119 @@ def render_comparison_visualization(
             fig_t2 = visualizer_t1.create_choropleth_by_candidate('Anne VIGNOT', color_scale='Greens')
             fig_t2.update_layout(height=500, title=dict(text='<b>Score Anne VIGNOT au T1</b>'))
             st.plotly_chart(fig_t2, use_container_width=True, key='comparison_vignot_t1')
+
+
+# =============================================================================
+# COMPARAISON INTER-ÉLECTIONS : T1 2020 vs T1 2026
+# =============================================================================
+
+def render_inter_election_comparison_dashboard(
+    inter_viz: InterElectionComparisonVisualizer
+):
+    """Dashboard KPI pour la comparaison T1 2020 vs T1 2026."""
+    st.subheader("📊 Comparaison Premier Tour 2020 → 2026")
+
+    stats = inter_viz.get_global_statistics()
+
+    # --- Participation ---
+    st.markdown("### ⚡ Participation")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Participation 2020", f"{stats['participation_2020']:.2f}%")
+    with col2:
+        st.metric(
+            "Participation 2026",
+            f"{stats['participation_2026']:.2f}%",
+            delta=f"{stats['evolution_participation']:+.2f}%",
+        )
+    with col3:
+        st.metric(
+            "Inscrits 2026",
+            f"{stats['total_inscrits_2026']:,}",
+            delta=f"{stats['total_inscrits_2026'] - stats['total_inscrits_2020']:+,}",
+        )
+
+    # --- Candidats communs ---
+    st.markdown("### 👥 Candidats présents aux deux élections")
+    candidats_stats = stats.get('candidats', {})
+    if candidats_stats:
+        cols = st.columns(len(candidats_stats))
+        for idx, (candidat, cstats) in enumerate(candidats_stats.items()):
+            with cols[idx]:
+                delta_label = f"{cstats['evolution_moyenne']:+.2f} pts"
+                st.metric(
+                    candidat,
+                    f"{cstats['score_moyen_2026']:.2f}%",
+                    delta=delta_label,
+                    help=f"2020 : {cstats['score_moyen_2020']:.2f}% → 2026 : {cstats['score_moyen_2026']:.2f}%",
+                )
+
+    # --- Tableau récapitulatif ---
+    with st.expander("📋 Tableau récapitulatif des candidats communs"):
+        recap_rows = []
+        for candidat, cstats in candidats_stats.items():
+            recap_rows.append({
+                'Candidat': candidat,
+                'Score moyen 2020 (%)': round(cstats['score_moyen_2020'], 2),
+                'Score moyen 2026 (%)': round(cstats['score_moyen_2026'], 2),
+                'Évolution (pts)': round(cstats['evolution_moyenne'], 2),
+                'Total voix 2020': cstats['total_voix_2020'],
+                'Total voix 2026': cstats['total_voix_2026'],
+                'Variation voix': cstats['total_voix_2026'] - cstats['total_voix_2020'],
+            })
+        if recap_rows:
+            df_recap = pd.DataFrame(recap_rows)
+            st.dataframe(df_recap, use_container_width=True, hide_index=True)
+
+
+def render_inter_election_comparison_visualization(
+    inter_viz: InterElectionComparisonVisualizer,
+):
+    """Visualisations comparatives détaillées T1 2020 vs T1 2026."""
+    st.subheader("🗺️ Analyses comparatives — 2020 vs 2026")
+
+    candidats = list(inter_viz.COMMON_CANDIDATES.keys())
+
+    tab_labels = [f"🔀 {c.split()[-1]}" for c in candidats]
+    tab_labels.append("📊 Vue d'ensemble")
+    tabs = st.tabs(tab_labels)
+
+    for i, candidat in enumerate(candidats):
+        with tabs[i]:
+            st.markdown(f"### {candidat}")
+
+            sub_tab1, sub_tab2, sub_tab3 = st.tabs(
+                ["🗺️ Carte évolution", "📊 Barres par bureau", "🔵 Scatter 2020 vs 2026"]
+            )
+
+            with sub_tab1:
+                fig_evo = inter_viz.create_candidate_evolution_map(candidat)
+                st.plotly_chart(fig_evo, use_container_width=True,
+                                key=f'inter_evo_map_{candidat}')
+
+            with sub_tab2:
+                fig_bars = inter_viz.create_evolution_bars_chart(candidat, n=20)
+                st.plotly_chart(fig_bars, use_container_width=True,
+                                key=f'inter_bars_{candidat}')
+
+            with sub_tab3:
+                fig_scatter = inter_viz.create_scatter_2020_vs_2026(candidat)
+                st.plotly_chart(fig_scatter, use_container_width=True,
+                                key=f'inter_scatter_{candidat}')
+
+    # Onglet vue d'ensemble : cartes scores côte à côte pour tous les candidats
+    with tabs[-1]:
+        st.markdown("### 🗺️ Scores 2020 et 2026 par candidat")
+        for candidat in candidats:
+            st.markdown(f"#### {candidat}")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                fig_2020 = inter_viz.create_candidate_score_map(candidat, 2020)
+                fig_2020.update_layout(height=500)
+                st.plotly_chart(fig_2020, use_container_width=True,
+                                key=f'inter_score_2020_{candidat}')
+            with col_b:
+                fig_2026 = inter_viz.create_candidate_score_map(candidat, 2026)
+                fig_2026.update_layout(height=500)
+                st.plotly_chart(fig_2026, use_container_width=True,
+                                key=f'inter_score_2026_{candidat}')

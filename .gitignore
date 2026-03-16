@@ -17,6 +17,10 @@ build/
 # Cartes HTML générées
 *.html
 
+# Exports générés (garder le dossier et README.md)
+exports/*.csv
+exports/DOCUMENTATION_EXPORTS_*.md
+
 # Fichiers de test
 test_*.py
 explore_*.py

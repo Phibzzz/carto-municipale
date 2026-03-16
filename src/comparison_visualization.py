@@ -5,7 +5,7 @@ Focalisé sur l'analyse de la performance d'Anne VIGNOT (T1 → T2)
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from plotly.subplots import make_subplots
 from src.vignot_analysis import VignotAnalyzer
 
@@ -781,5 +781,306 @@ class TourComparisonVisualizer:
             height=500,
             yaxis_title="Score (%)"
         )
+
+        return fig
+
+
+# =============================================================================
+# Comparaison inter-élections : T1 2020 vs T1 2026
+# =============================================================================
+
+class InterElectionComparisonVisualizer:
+    """
+    Compare les résultats du premier tour 2020 et du premier tour 2026
+    bureau par bureau, pour les candidats présents aux deux élections.
+    """
+
+    # Candidats présents dans les deux élections (clé = nom dans df_candidates)
+    COMMON_CANDIDATES = {
+        'Anne Vignot': {'color_2020': '#4daf4a', 'color_2026': '#1a7a1a', 'colorscale': 'Greens'},
+        'Ludovic Fagaut': {'color_2020': '#377eb8', 'color_2026': '#003d7a', 'colorscale': 'Blues'},
+        'Jacques Ricciardetti': {'color_2020': '#984ea3', 'color_2026': '#5a0066', 'colorscale': 'Purples'},
+        'Nicole Friess': {'color_2020': '#ff7f00', 'color_2026': '#a34f00', 'colorscale': 'Oranges'},
+    }
+
+    def __init__(self, data_2020: Tuple, data_2026: Tuple):
+        """
+        Args:
+            data_2020: Tuple (geojson_enriched, df_candidates, geojson_bureaux) pour 2020 T1
+            data_2026: Tuple (geojson_enriched, df_candidates, geojson_bureaux) pour 2026 T1
+        """
+        self.geojson_2020, self.df_2020, self.geojson_bureaux_2020 = data_2020
+        self.geojson_2026, self.df_2026, self.geojson_bureaux_2026 = data_2026
+
+        self.map_center = self._calculate_map_center()
+        self.evolution_data = self._calculate_evolution_data()
+
+    def _calculate_map_center(self) -> Dict:
+        lons, lats = [], []
+        for feature in self.geojson_2020['features']:
+            coords = feature['geometry']['coordinates']
+            geom_type = feature['geometry']['type']
+            if geom_type == 'Polygon':
+                for ring in coords:
+                    for p in ring:
+                        lons.append(p[0]); lats.append(p[1])
+            elif geom_type == 'MultiPolygon':
+                for polygon in coords:
+                    for ring in polygon:
+                        for p in ring:
+                            lons.append(p[0]); lats.append(p[1])
+        return {'lat': sum(lats) / len(lats), 'lon': sum(lons) / len(lons)}
+
+    def _calculate_evolution_data(self) -> pd.DataFrame:
+        """
+        Retourne un DataFrame avec les bureaux en lignes et les colonnes :
+        NUM_BUREAU, CANDIDAT, SCORE_2020, VOIX_2020, SCORE_2026, VOIX_2026,
+        INSCRITS_2020, INSCRITS_2026, EVOLUTION_ABS, EVOLUTION_REL
+        """
+        rows = []
+        # Identifier les noms normalisés dans chaque df
+        candidats_2020 = set(self.df_2020['CANDIDAT'].unique())
+        candidats_2026 = set(self.df_2026['CANDIDAT'].unique())
+
+        for canonical, _ in self.COMMON_CANDIDATES.items():
+            # Cherche le nom le plus proche dans chaque df
+            nom_2020 = self._find_candidate_name(canonical, candidats_2020)
+            nom_2026 = self._find_candidate_name(canonical, candidats_2026)
+            if nom_2020 is None or nom_2026 is None:
+                continue
+
+            df_c20 = self.df_2020[self.df_2020['CANDIDAT'] == nom_2020][
+                ['NUM_BUREAU', 'POURCENTAGE_EXPRIMES', 'VOIX', 'INSCRITS']
+            ].copy()
+            df_c20.columns = ['NUM_BUREAU', 'SCORE_2020', 'VOIX_2020', 'INSCRITS_2020']
+
+            df_c26 = self.df_2026[self.df_2026['CANDIDAT'] == nom_2026][
+                ['NUM_BUREAU', 'POURCENTAGE_EXPRIMES', 'VOIX', 'INSCRITS']
+            ].copy()
+            df_c26.columns = ['NUM_BUREAU', 'SCORE_2026', 'VOIX_2026', 'INSCRITS_2026']
+
+            merged = df_c20.merge(df_c26, on='NUM_BUREAU', how='inner')
+            merged['CANDIDAT'] = canonical
+            merged['EVOLUTION_ABS'] = merged['SCORE_2026'] - merged['SCORE_2020']
+            merged['EVOLUTION_REL'] = (merged['SCORE_2026'] / merged['SCORE_2020'].replace(0, np.nan) - 1) * 100
+            rows.append(merged)
+
+        if rows:
+            return pd.concat(rows, ignore_index=True)
+        return pd.DataFrame()
+
+    @staticmethod
+    def _find_candidate_name(canonical: str, candidates_set: set) -> Optional[str]:
+        """Trouve le nom du candidat dans le df en faisant une correspondance souple sur le nom de famille."""
+        last_name = canonical.split()[-1].lower()
+        for name in candidates_set:
+            if last_name in name.lower():
+                return name
+        return None
+
+    def get_global_statistics(self) -> Dict:
+        """Retourne des statistiques globales comparatives entre 2020 et 2026."""
+        bureau_2020 = self.df_2020.groupby('NUM_BUREAU').first()
+        bureau_2026 = self.df_2026.groupby('NUM_BUREAU').first()
+
+        common_bureaux = set(bureau_2020.index) & set(bureau_2026.index)
+
+        b20 = bureau_2020.loc[list(common_bureaux)]
+        b26 = bureau_2026.loc[list(common_bureaux)]
+
+        participation_2020 = 100 - b20['TAUX_ABSTENTION'].mean()
+        participation_2026 = 100 - b26['TAUX_ABSTENTION'].mean()
+
+        stats = {
+            'nb_bureaux_communs': len(common_bureaux),
+            'total_inscrits_2020': int(b20['INSCRITS'].sum()),
+            'total_inscrits_2026': int(b26['INSCRITS'].sum()),
+            'total_votants_2020': int(b20['VOTANTS'].sum()),
+            'total_votants_2026': int(b26['VOTANTS'].sum()),
+            'participation_2020': participation_2020,
+            'participation_2026': participation_2026,
+            'evolution_participation': participation_2026 - participation_2020,
+        }
+
+        # Stats par candidat commun
+        candidats_stats = {}
+        for canonical in self.COMMON_CANDIDATES:
+            subset = self.evolution_data[self.evolution_data['CANDIDAT'] == canonical]
+            if subset.empty:
+                continue
+            candidats_stats[canonical] = {
+                'score_moyen_2020': subset['SCORE_2020'].mean(),
+                'score_moyen_2026': subset['SCORE_2026'].mean(),
+                'evolution_moyenne': subset['EVOLUTION_ABS'].mean(),
+                'total_voix_2020': int(subset['VOIX_2020'].sum()),
+                'total_voix_2026': int(subset['VOIX_2026'].sum()),
+            }
+
+        stats['candidats'] = candidats_stats
+        return stats
+
+    def create_candidate_evolution_map(self, candidat: str) -> go.Figure:
+        """
+        Carte choroplèthe montrant l'évolution du score d'un candidat entre 2020 et 2026.
+        Gradient : rouge (régression) → blanc → vert (progression).
+        """
+        subset = self.evolution_data[self.evolution_data['CANDIDAT'] == candidat]
+        if subset.empty:
+            return go.Figure()
+
+        locations, z_values, hover_texts = [], [], []
+
+        for _, row in subset.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations.append(num)
+            z_values.append(row['EVOLUTION_ABS'])
+            txt = (f"<b>Bureau {num}</b><br><br>"
+                   f"<b>Scores {candidat} :</b><br>"
+                   f"2020 : {row['SCORE_2020']:.2f}%<br>"
+                   f"2026 : {row['SCORE_2026']:.2f}%<br>"
+                   f"<b>Évolution : {row['EVOLUTION_ABS']:+.2f} pts</b><br>"
+                   f"<br>Voix : {int(row['VOIX_2020'])} → {int(row['VOIX_2026'])}")
+            hover_texts.append(txt)
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=self.geojson_2026,
+            locations=locations,
+            z=z_values,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=[[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],
+            zmid=0,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Évolution<br>(pts %)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(text=f'<b>Évolution {candidat} — T1 2020 → T1 2026</b>', x=0.5, xanchor='center'),
+            height=700,
+            margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_candidate_score_map(self, candidat: str, year: int) -> go.Figure:
+        """Carte du score absolu d'un candidat pour une année donnée (2020 ou 2026)."""
+        col_score = 'SCORE_2020' if year == 2020 else 'SCORE_2026'
+        col_voix = 'VOIX_2020' if year == 2020 else 'VOIX_2026'
+        geojson = self.geojson_2020 if year == 2020 else self.geojson_2026
+        cfg = self.COMMON_CANDIDATES.get(candidat, {})
+        colorscale = cfg.get('colorscale', 'Greens')
+
+        subset = self.evolution_data[self.evolution_data['CANDIDAT'] == candidat]
+        if subset.empty:
+            return go.Figure()
+
+        locations, z_values, hover_texts = [], [], []
+        for _, row in subset.iterrows():
+            num = int(row['NUM_BUREAU'])
+            locations.append(num)
+            z_values.append(row[col_score])
+            txt = (f"<b>Bureau {num}</b><br>"
+                   f"{candidat} — {year}<br>"
+                   f"Score : {row[col_score]:.2f}%<br>"
+                   f"Voix : {int(row[col_voix])}")
+            hover_texts.append(txt)
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=geojson,
+            locations=locations,
+            z=z_values,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=colorscale,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title=f"Score {year}<br>(%)", thickness=20, len=0.7, x=1.02),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(text=f'<b>{candidat} — Score T1 {year}</b>', x=0.5, xanchor='center'),
+            height=700,
+            margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_evolution_bars_chart(self, candidat: str, n: int = 15) -> go.Figure:
+        """Bar chart horizontal des n plus fortes progressions et régressions pour un candidat."""
+        subset = self.evolution_data[self.evolution_data['CANDIDAT'] == candidat].copy()
+        if subset.empty:
+            return go.Figure()
+
+        subset = subset.sort_values('EVOLUTION_ABS')
+        top_n = pd.concat([subset.head(n // 2), subset.tail(n - n // 2)]).drop_duplicates()
+
+        colors = ['#d73027' if v < 0 else '#1a9850' for v in top_n['EVOLUTION_ABS']]
+
+        fig = go.Figure(go.Bar(
+            x=top_n['EVOLUTION_ABS'].round(2),
+            y=top_n['NUM_BUREAU'].astype(str),
+            orientation='h',
+            marker_color=colors,
+            text=[f"{v:+.1f}%" for v in top_n['EVOLUTION_ABS']],
+            textposition='outside',
+            hovertemplate=(
+                "<b>Bureau %{y}</b><br>"
+                "2020 : %{customdata[0]:.2f}%<br>"
+                "2026 : %{customdata[1]:.2f}%<br>"
+                "Évolution : %{x:+.2f} pts<extra></extra>"
+            ),
+            customdata=top_n[['SCORE_2020', 'SCORE_2026']].values,
+        ))
+        fig.update_layout(
+            title=f'<b>{candidat} — Évolutions par bureau (T1 2020 → T1 2026)</b>',
+            xaxis_title="Évolution (points %)",
+            yaxis_title="Bureau",
+            height=max(400, len(top_n) * 22),
+            xaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='gray'),
+        )
+        return fig
+
+    def create_scatter_2020_vs_2026(self, candidat: str) -> go.Figure:
+        """Scatter plot Score 2020 vs Score 2026 (diagonale = pas de changement)."""
+        subset = self.evolution_data[self.evolution_data['CANDIDAT'] == candidat]
+        if subset.empty:
+            return go.Figure()
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=subset['SCORE_2020'],
+            y=subset['SCORE_2026'],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=subset['EVOLUTION_ABS'],
+                colorscale=[[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],
+                cmid=0,
+                showscale=True,
+                colorbar=dict(title='Évolution<br>(pts)'),
+            ),
+            text=[f"Bureau {int(b)}<br>2020: {s20:.2f}%<br>2026: {s26:.2f}%<br>Évol: {e:+.2f} pts"
+                  for b, s20, s26, e in zip(
+                      subset['NUM_BUREAU'], subset['SCORE_2020'],
+                      subset['SCORE_2026'], subset['EVOLUTION_ABS'])],
+            hovertemplate='%{text}<extra></extra>',
+        ))
+        # Diagonale
+        vmax = max(subset['SCORE_2020'].max(), subset['SCORE_2026'].max()) * 1.05
+        fig.add_trace(go.Scatter(
+            x=[0, vmax], y=[0, vmax],
+            mode='lines', line=dict(color='gray', dash='dash'),
+            name='Pas de changement', showlegend=True,
+        ))
+        fig.update_layout(
+            title=f'<b>{candidat} — Score 2020 vs Score 2026 par bureau</b>',
+            xaxis_title='Score T1 2020 (%)',
+            yaxis_title='Score T1 2026 (%)',
+            height=550,
+        )
+        return fig
         
         return fig

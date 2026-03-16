@@ -50,6 +50,8 @@ class ElectoralDataLoader:
         """
         if self.data_format == 'long':
             return self._extract_candidates_data_long_format(df)
+        elif self.data_format == 'besancon_2026':
+            return self._extract_candidates_data_besancon_2026_format(df)
         else:
             return self._extract_candidates_data_wide_format(df)
     
@@ -150,7 +152,82 @@ class ElectoralDataLoader:
                     candidates_data.append(candidat_info)
         
         return pd.DataFrame(candidates_data)
-    
+
+    def _extract_candidates_data_besancon_2026_format(self, df):
+        """
+        Extrait les données au format spécifique Besançon 2026.
+        
+        Ce format a une ligne par bureau de vote, avec :
+        - 'Bureau de vote' : texte "101 - Nom du bureau"
+        - Colonnes candidats : "Prénom Nom - NOM DE LISTE" (voix directement)
+        - Ligne "Total scrutin" à ignorer
+        - Pas de colonnes % ni d'abstentions déjà calculées
+        
+        Args:
+            df: DataFrame brut chargé depuis Excel
+            
+        Returns:
+            pd.DataFrame: DataFrame standardisé (même structure que les autres formats)
+        """
+        # Filtrer la ligne de total
+        df = df[~df['Bureau de vote'].str.contains('Total', na=True)].copy()
+
+        # Extraire le numéro de bureau depuis le texte "101 - Nom du bureau"
+        df['NUM_BUREAU'] = df['Bureau de vote'].str.extract(r'^(\d+)').astype(int)
+
+        # Identifier les colonnes candidats : toutes les colonnes après 'Procurations'
+        cols_before_candidats = ['Bureau de vote', 'Inscrits', 'Emargements', 'Votants',
+                                  'Blancs', 'Nuls', 'Exprimés', 'Procurations', 'NUM_BUREAU']
+        candidat_cols = [c for c in df.columns if c not in cols_before_candidats]
+
+        candidates_data = []
+
+        for _, row in df.iterrows():
+            inscrits = int(row['Inscrits']) if pd.notna(row['Inscrits']) else 0
+            votants = int(row['Votants']) if pd.notna(row['Votants']) else 0
+            exprimes = int(row['Exprimés']) if pd.notna(row['Exprimés']) else 0
+            abstentions = inscrits - votants
+            taux_abstention = (abstentions / inscrits * 100) if inscrits > 0 else 0.0
+
+            bureau_data = {
+                'NUM_BUREAU': row['NUM_BUREAU'],
+                'COMMUNE': 'Besançon',
+                'INSCRITS': inscrits,
+                'VOTANTS': votants,
+                'ABSTENTIONS': abstentions,
+                'TAUX_ABSTENTION': taux_abstention,
+                'EXPRIMES': exprimes,
+            }
+
+            for col in candidat_cols:
+                voix = int(row[col]) if pd.notna(row[col]) else 0
+                # Extraire "Prénom Nom" depuis "Prénom Nom - NOM DE LISTE"
+                candidat_full = col.split(' - ')[0].strip()
+                # Décomposer prénom/nom : dernier mot = NOM, reste = prénom
+                parts = candidat_full.split()
+                if len(parts) >= 2:
+                    prenom = ' '.join(parts[:-1])
+                    nom = parts[-1]
+                else:
+                    prenom = ''
+                    nom = candidat_full
+
+                pct_exprimes = (voix / exprimes * 100) if exprimes > 0 else 0.0
+                pct_inscrits = (voix / inscrits * 100) if inscrits > 0 else 0.0
+
+                candidat_info = bureau_data.copy()
+                candidat_info.update({
+                    'CANDIDAT': candidat_full,
+                    'NOM': nom,
+                    'PRENOM': prenom,
+                    'VOIX': voix,
+                    'POURCENTAGE_INSCRITS': pct_inscrits,
+                    'POURCENTAGE_EXPRIMES': pct_exprimes,
+                })
+                candidates_data.append(candidat_info)
+
+        return pd.DataFrame(candidates_data)
+
     def load_geojson_perimetres(self):
         """
         Charge le fichier GeoJSON des périmètres de bureaux de vote

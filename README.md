@@ -64,6 +64,12 @@ L'application s'ouvrira automatiquement dans votre navigateur à l'adresse `http
   - KPIs globaux (bureaux, inscrits, votants, participation)
   - Top 5 des candidats avec barres de progression
 
+- **📥 Exports de données** :
+  - Export CSV de toutes les statistiques calculées
+  - Documentation Markdown complète avec règles de calcul
+  - Horodatage automatique des fichiers
+  - Voir [GUIDE_EXPORTS.md](GUIDE_EXPORTS.md) pour plus de détails
+
 ### Mode 2 : Génération de fichiers HTML statiques
 
 Pour générer des fichiers HTML statiques (ancienne méthode) :
@@ -99,10 +105,14 @@ cartographie-electorale/
 │   ├── config.py                  # Configuration de l'application
 │   ├── data_loader.py             # Chargement et fusion des données
 │   ├── visualization.py           # Création des cartes Plotly
+│   ├── export_manager.py          # Gestion des exports CSV/Markdown
 │   └── streamlit_app.py           # Logique métier Streamlit
+├── exports/                       # Dossier des exports générés
+│   └── README.md                  # Documentation du dossier
 ├── app.py                         # Point d'entrée Streamlit
 ├── main.py                        # Point d'entrée batch (génération HTML)
 ├── requirements.txt               # Dépendances Python
+├── GUIDE_EXPORTS.md               # Guide d'utilisation des exports
 └── README.md                      # Cette documentation
 ```
 
