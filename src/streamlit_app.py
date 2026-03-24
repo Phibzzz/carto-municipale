@@ -16,7 +16,7 @@ from src.config import (
 )
 from src.data_loader import ElectoralDataLoader
 from src.visualization import ElectoralMapVisualizer
-from src.comparison_visualization import TourComparisonVisualizer, InterElectionComparisonVisualizer
+from src.comparison_visualization import TourComparisonVisualizer, InterElectionComparisonVisualizer, Municipales2026T1T2Comparator
 from src.export_manager import ExportManager
 from src.vignot_analysis import VignotAnalyzer
 
@@ -2264,3 +2264,158 @@ def render_inter_election_comparison_visualization(
                 fig_2026.update_layout(height=500)
                 st.plotly_chart(fig_2026, use_container_width=True,
                                 key=f'inter_score_2026_{candidat}')
+
+
+# =============================================================================
+# COMPARAISON T1 / T2 — Municipales 2026 Besancon
+# =============================================================================
+
+def render_2026_comparison_dashboard(comp: Municipales2026T1T2Comparator):
+    """
+    Dashboard KPI pour la comparaison T1 vs T2 des municipales 2026.
+    """
+    st.subheader("📊 Comparaison T1 → T2 — Municipales 2026 Besançon")
+
+    stats = comp.get_comparison_stats()
+
+    # --- Participation ---
+    st.markdown("### ⚡ Participation")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Participation T1", f"{stats['participation_t1']:.2f}%",
+                  help=f"{stats['total_votants_t1']:,} votants sur {stats['total_inscrits_t1']:,} inscrits")
+    with c2:
+        st.metric("Participation T2", f"{stats['participation_t2']:.2f}%",
+                  delta=f"{stats['delta_participation']:+.2f} pts",
+                  help=f"{stats['total_votants_t2']:,} votants sur {stats['total_inscrits_t2']:,} inscrits")
+    with c3:
+        st.metric("Bureaux analysés", f"{stats['nb_bureaux']}")
+    with c4:
+        st.metric("Voix de report disponibles", f"{stats['voix_report_total']:,}",
+                  help="Total des voix des candidats présents uniquement au T1")
+
+    # --- Résultats par candidat T2 ---
+    st.markdown("### 🏆 Résultats T2 par candidat")
+    candidats = stats.get('candidats', {})
+    if candidats:
+        cols = st.columns(len(candidats))
+        for idx, (name, cstats) in enumerate(candidats.items()):
+            with cols[idx]:
+                st.metric(
+                    name,
+                    f"{cstats['score_moyen_t2']:.2f}%",
+                    delta=f"{cstats['delta_moyen']:+.2f} pts vs T1",
+                    help=(
+                        f"T1 : {cstats['score_moyen_t1']:.2f}% "
+                        f"({cstats['total_voix_t1']:,} voix) → "
+                        f"T2 : {cstats['score_moyen_t2']:.2f}% "
+                        f"({cstats['total_voix_t2']:,} voix)"
+                    ),
+                )
+                st.caption(f"En tête dans {cstats['bureaux_en_tete_t2']} bureaux au T2")
+
+    # --- Détail du report de voix ---
+    report_details = stats.get('report_details', {})
+    if report_details:
+        st.markdown("### 🔄 Voix disponibles pour report (candidats T1 uniquement)")
+        rd_rows = [
+            {'Candidat': name, 'Voix T1': voix, '% du total de report': f"{voix / stats['voix_report_total'] * 100:.1f}%"}
+            for name, voix in sorted(report_details.items(), key=lambda x: -x[1])
+        ]
+        st.dataframe(pd.DataFrame(rd_rows), use_container_width=True, hide_index=True)
+
+    # --- Tableau détaillé par bureau ---
+    with st.expander("📋 Tableau détaillé par bureau", expanded=False):
+        df = comp.comparison_data.copy()
+        cols_display = ['NUM_BUREAU', 'PARTICIPATION_T1', 'PARTICIPATION_T2', 'DELTA_PARTICIPATION']
+        for key, name in [('FAGAUT', 'Fagaut'), ('VIGNOT', 'Vignot')]:
+            for suffix in ['T1', 'T2']:
+                for metric, label in [('SCORE', f'% {name} {suffix}'), ('VOIX', f'Voix {name} {suffix}')]:
+                    col = f'{metric}_{key}_{suffix}'
+                    if col in df.columns:
+                        df = df.rename(columns={col: label})
+                        cols_display.append(label)
+            delta = f'DELTA_{key}'
+            if delta in df.columns:
+                df = df.rename(columns={delta: f'Delta {name} (pts)'})
+                cols_display.append(f'Delta {name} (pts)')
+
+        existing_cols = [c for c in cols_display if c in df.columns]
+        df_show = df[existing_cols].round(2)
+        df_show = df_show.rename(columns={
+            'NUM_BUREAU': 'Bureau',
+            'PARTICIPATION_T1': 'Participation T1 (%)',
+            'PARTICIPATION_T2': 'Participation T2 (%)',
+            'DELTA_PARTICIPATION': 'Delta participation (pts)',
+        })
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+
+def render_2026_comparison_visualization(comp: Municipales2026T1T2Comparator):
+    """
+    Visualisations comparatives T1 vs T2 pour les municipales 2026.
+    Fournit des cartes et graphiques organisés en onglets.
+    """
+    st.subheader("🗺️ Analyses comparatives — T1 vs T2 2026")
+
+    tab_resultats, tab_part, tab_fagaut, tab_vignot, tab_report = st.tabs([
+        "🗺️ Résultats T2",
+        "⚡ Participation",
+        "🔵 Fagaut T1→T2",
+        "🟢 Vignot T1→T2",
+        "🔄 Report de voix",
+    ])
+
+    # --- Onglet Résultats T2 ---
+    with tab_resultats:
+        st.markdown("### Carte des résultats au 2ème tour")
+        fig_t2 = comp.create_results_map_t2()
+        st.plotly_chart(fig_t2, use_container_width=True, key='t2_results_map')
+
+    # --- Onglet Participation ---
+    with tab_part:
+        st.markdown("### Evolution de la participation T1 → T2")
+        fig_part = comp.create_participation_evolution_map()
+        st.plotly_chart(fig_part, use_container_width=True, key='part_evo_map')
+
+    # --- Onglet Fagaut ---
+    with tab_fagaut:
+        candidat = 'Ludovic Fagaut'
+        st.markdown(f"### {candidat} — Evolution T1 → T2")
+
+        sub1, sub2, sub3 = st.tabs(["🗺️ Carte évolution", "📊 Barres par bureau", "🔵 Scatter T1 vs T2"])
+        with sub1:
+            fig = comp.create_candidate_delta_map(candidat)
+            st.plotly_chart(fig, use_container_width=True, key='fagaut_delta_map')
+        with sub2:
+            fig = comp.create_score_evolution_bars(candidat)
+            st.plotly_chart(fig, use_container_width=True, key='fagaut_evo_bars')
+        with sub3:
+            fig = comp.create_scatter_t1_vs_t2(candidat)
+            st.plotly_chart(fig, use_container_width=True, key='fagaut_scatter')
+
+    # --- Onglet Vignot ---
+    with tab_vignot:
+        candidat = 'Anne Vignot'
+        st.markdown(f"### {candidat} — Evolution T1 → T2")
+
+        sub1, sub2, sub3 = st.tabs(["🗺️ Carte évolution", "📊 Barres par bureau", "🔵 Scatter T1 vs T2"])
+        with sub1:
+            fig = comp.create_candidate_delta_map(candidat)
+            st.plotly_chart(fig, use_container_width=True, key='vignot_delta_map')
+        with sub2:
+            fig = comp.create_score_evolution_bars(candidat)
+            st.plotly_chart(fig, use_container_width=True, key='vignot_evo_bars')
+        with sub3:
+            fig = comp.create_scatter_t1_vs_t2(candidat)
+            st.plotly_chart(fig, use_container_width=True, key='vignot_scatter')
+
+    # --- Onglet Report de voix ---
+    with tab_report:
+        st.markdown("### Analyse du report de voix par bureau")
+        st.caption(
+            "Voix 'disponibles pour report' = total des voix obtenues au T1 "
+            "par les candidats absents au T2 (Véziès, Delabrousse, Ricciardetti, Friess)."
+        )
+        fig_report = comp.create_vote_transfer_chart()
+        st.plotly_chart(fig_report, use_container_width=True, key='vote_transfer_chart')

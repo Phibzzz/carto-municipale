@@ -31,6 +31,13 @@ ELECTIONS_CONFIG = {
         'description': 'Premier tour des élections municipales de Besançon 2026',
         'format': 'besancon_2026'  # Format spécifique : une ligne par bureau, colonnes candidats textuelles
     },
+    'municipales_2026_t2': {
+        'label': 'Municipales 2026 - Tour 2',
+        'date': '2026-03-29',
+        'excel_file': 'resultats-bureaux-de-votes-2eme-tour.xlsx',
+        'description': 'Second tour des élections municipales de Besançon 2026',
+        'format': 'besancon_2026_t2'  # Format national filtré Besançon, candidats numérotés
+    },
 }
 
 # Fichiers GeoJSON (communs à toutes les élections)
@@ -167,6 +174,16 @@ TOUR_MODES = {
         'label': '🔀 Évol. 2020→2026',
         'description': 'Comparaison du premier tour 2020 vs premier tour 2026',
         'election_keys': ['municipales_2020_t1', 'municipales_2026_t1']
+    },
+    '2026_t2': {
+        'label': '📊 T2 - 2026',
+        'description': 'Second tour des élections municipales 2026 (Besançon)',
+        'election_key': 'municipales_2026_t2'
+    },
+    'comparison_2026': {
+        'label': '🔀 T1/T2 - 2026',
+        'description': 'Comparaison T1 vs T2 des élections municipales 2026',
+        'election_keys': ['municipales_2026_t1', 'municipales_2026_t2']
     },
 }
 

@@ -52,6 +52,8 @@ class ElectoralDataLoader:
             return self._extract_candidates_data_long_format(df)
         elif self.data_format == 'besancon_2026':
             return self._extract_candidates_data_besancon_2026_format(df)
+        elif self.data_format == 'besancon_2026_t2':
+            return self._extract_candidates_data_besancon_2026_t2_format(df)
         else:
             return self._extract_candidates_data_wide_format(df)
     
@@ -227,6 +229,116 @@ class ElectoralDataLoader:
                 candidates_data.append(candidat_info)
 
         return pd.DataFrame(candidates_data)
+
+    def _extract_candidates_data_besancon_2026_t2_format(self, df):
+        """
+        Extrait les données au format national du 2ème tour 2026 (France entière),
+        filtré sur Besançon.
+
+        Ce format a :
+        - Une ligne par bureau de vote (Code BV), avec données France entière
+        - Les candidats numérotés : 'Nom candidat 1', 'Prénom candidat 1', 'Voix 1', etc.
+        - 'Libellé commune' = 'Besançon' pour les 68 bureaux de Besançon
+        - Des colonnes supplémentaires : 'Elu N', 'Sièges au CM N', 'Sièges au CC N'
+
+        Args:
+            df: DataFrame brut chargé depuis Excel (France entière)
+
+        Returns:
+            pd.DataFrame: DataFrame standardisé (même structure que les autres formats)
+        """
+        # Filtrer sur Besançon uniquement
+        df_bsn = df[df['Libellé commune'].astype(str).str.lower().str.contains('besan', na=False)].copy()
+        print(f"  Filtrage T2 : {len(df_bsn)} bureaux de Besançon sur {len(df)} au total")
+
+        candidates_data = []
+
+        for _, row in df_bsn.iterrows():
+            num_bureau = int(row['Code BV']) if pd.notna(row['Code BV']) else 0
+            inscrits   = int(row['Inscrits']) if pd.notna(row['Inscrits']) else 0
+            votants    = int(row['Votants'])  if pd.notna(row['Votants'])  else 0
+            exprimes   = int(row['Exprimés']) if pd.notna(row['Exprimés']) else 0
+            abstentions = int(row['Abstentions']) if pd.notna(row['Abstentions']) else (inscrits - votants)
+            taux_abstention = (abstentions / inscrits * 100) if inscrits > 0 else 0.0
+
+            bureau_data = {
+                'NUM_BUREAU':      num_bureau,
+                'COMMUNE':         'Besançon',
+                'INSCRITS':        inscrits,
+                'VOTANTS':         votants,
+                'ABSTENTIONS':     abstentions,
+                'TAUX_ABSTENTION': taux_abstention,
+                'EXPRIMES':        exprimes,
+            }
+
+            # Itérer sur les candidats numérotés (1, 2, …)
+            for n in range(1, 20):
+                nom_col    = f'Nom candidat {n}'
+                prenom_col = f'Prénom candidat {n}'
+                voix_col   = f'Voix {n}'
+
+                if nom_col not in row.index or pd.isna(row[nom_col]):
+                    break  # Plus de candidat
+
+                nom_raw   = str(row[nom_col]).strip()
+                prenom_raw = str(row[prenom_col]).strip() if pd.notna(row.get(prenom_col)) else ''
+                voix      = int(row[voix_col]) if pd.notna(row.get(voix_col)) else 0
+
+                # Normaliser les pourcentages (peuvent être float [0-1] ou string "38,71%")
+                def _parse_pct(val):
+                    if pd.isna(val):
+                        return 0.0
+                    if isinstance(val, str):
+                        try:
+                            return float(val.replace('%', '').replace(',', '.').strip())
+                        except ValueError:
+                            return 0.0
+                    fval = float(val)
+                    return fval * 100 if fval <= 1.0 else fval
+
+                pct_exprimes = _parse_pct(row.get(f'% Voix/exprimés {n}', 0))
+                pct_inscrits = _parse_pct(row.get(f'% Voix/inscrits {n}',  0))
+
+                # Nom normalisé en Title case pour correspondre au T1
+                nom    = nom_raw.capitalize()
+                prenom = prenom_raw  # déjà en bonne casse dans le fichier
+
+                # Candidat connu : harmoniser la casse avec le T1
+                candidat_full = f"{prenom} {nom}"
+                if 'fagaut' in nom.lower():
+                    candidat_full = 'Ludovic Fagaut'
+                elif 'vignot' in nom.lower():
+                    candidat_full = 'Anne Vignot'
+
+                # Colonnes supplémentaires T2
+                elu_val  = row.get(f'Elu {n}')
+                elu      = bool(elu_val) if pd.notna(elu_val) else False
+                sieges_cm = int(row[f'Sièges au CM {n}']) if f'Sièges au CM {n}' in row.index and pd.notna(row.get(f'Sièges au CM {n}')) else 0
+                sieges_cc = int(row[f'Sièges au CC {n}']) if f'Sièges au CC {n}' in row.index and pd.notna(row.get(f'Sièges au CC {n}')) else 0
+                nuance    = str(row.get(f'Nuance liste {n}', '')).strip() if pd.notna(row.get(f'Nuance liste {n}')) else ''
+                libelle   = str(row.get(f'Libellé abrégé de liste {n}', '')).strip() if pd.notna(row.get(f'Libellé abrégé de liste {n}')) else ''
+
+                candidat_info = bureau_data.copy()
+                candidat_info.update({
+                    'CANDIDAT':              candidat_full,
+                    'NOM':                   nom,
+                    'PRENOM':                prenom,
+                    'VOIX':                  voix,
+                    'POURCENTAGE_INSCRITS':  pct_inscrits,
+                    'POURCENTAGE_EXPRIMES':  pct_exprimes,
+                    'ELU':                   elu,
+                    'SIEGES_CM':             sieges_cm,
+                    'SIEGES_CC':             sieges_cc,
+                    'NUANCE':                nuance,
+                    'LIBELLE_LISTE':         libelle,
+                })
+                candidates_data.append(candidat_info)
+
+        df_result = pd.DataFrame(candidates_data)
+        print(f"  T2 extrait : {len(df_result)} lignes, "
+              f"{df_result['CANDIDAT'].nunique()} candidats, "
+              f"{df_result['NUM_BUREAU'].nunique()} bureaux")
+        return df_result
 
     def load_geojson_perimetres(self):
         """

@@ -28,6 +28,8 @@ explore_*.py
 # Fichiers temporaires
 *.tmp
 *.temp
+# Fichiers verrou Office (Excel, Word...) — créés quand un fichier est ouvert
+~$*
 
 # IDE
 .vscode/

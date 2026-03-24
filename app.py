@@ -6,7 +6,7 @@ import streamlit as st
 from src.config import APP_CONFIG, ELECTIONS_CONFIG, TOUR_MODES, get_available_elections, get_election_label
 from src.data_loader import ElectoralDataLoader
 from src.visualization import ElectoralMapVisualizer
-from src.comparison_visualization import TourComparisonVisualizer, InterElectionComparisonVisualizer
+from src.comparison_visualization import TourComparisonVisualizer, InterElectionComparisonVisualizer, Municipales2026T1T2Comparator
 from src.export_manager import ExportManager
 from src.streamlit_app import (
     render_sidebar,
@@ -18,6 +18,8 @@ from src.streamlit_app import (
     render_inter_election_comparison_visualization,
     render_vote_transfer_analysis,
     render_vote_transfer_analysis_fagaut,
+    render_2026_comparison_dashboard,
+    render_2026_comparison_visualization,
     initialize_session_state,
     render_export_section
 )
@@ -92,6 +94,25 @@ def load_inter_election_data():
     return results
 
 
+@st.cache_data(show_spinner="Chargement T1 et T2 2026...")
+def load_2026_comparison_data():
+    """
+    Charge les données T1 et T2 2026 pour la comparaison (avec cache).
+
+    Returns:
+        Dict: {election_key: (geojson_enriched, df_candidates, geojson_bureaux)}
+    """
+    results = ElectoralDataLoader.load_multiple_elections([
+        'municipales_2026_t1',
+        'municipales_2026_t2',
+    ])
+
+    for key, (_, df, _) in results.items():
+        print(f"[CACHE] 2026 T1/T2 - {key}: {df['CANDIDAT'].nunique()} candidats, {len(df)} lignes")
+
+    return results
+
+
 def main():
     """Fonction principale de l'application"""
     
@@ -107,7 +128,7 @@ def main():
     tour_mode_options = list(TOUR_MODES.keys())
     tour_mode_labels = [TOUR_MODES[m]['label'] for m in tour_mode_options]
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     current_tour_mode = st.session_state.get('tour_mode', 't1')
 
     with col1:
@@ -131,6 +152,16 @@ def main():
             st.session_state.tour_mode = '2026_t1'
 
     with col5:
+        if st.button(TOUR_MODES['2026_t2']['label'], use_container_width=True,
+                     type='primary' if current_tour_mode == '2026_t2' else 'secondary'):
+            st.session_state.tour_mode = '2026_t2'
+
+    with col6:
+        if st.button(TOUR_MODES['comparison_2026']['label'], use_container_width=True,
+                     type='primary' if current_tour_mode == 'comparison_2026' else 'secondary'):
+            st.session_state.tour_mode = 'comparison_2026'
+
+    with col7:
         if st.button(TOUR_MODES['comparison_2020_2026']['label'], use_container_width=True,
                      type='primary' if current_tour_mode == 'comparison_2020_2026' else 'secondary'):
             st.session_state.tour_mode = 'comparison_2020_2026'
@@ -198,6 +229,30 @@ def main():
 
                 with st.container():
                     render_inter_election_comparison_visualization(inter_comparison_visualizer)
+
+            except Exception as e:
+                st.error(f"❌ Erreur lors du chargement des données : {str(e)}")
+                import traceback
+                st.error(traceback.format_exc())
+                st.stop()
+
+    elif tour_mode == 'comparison_2026':
+        # Mode comparaison T1/T2 2026
+        with st.spinner("Chargement du T1 et T2 2026..."):
+            try:
+                all_data = load_2026_comparison_data()
+                data_t1  = all_data['municipales_2026_t1']
+                data_t2  = all_data['municipales_2026_t2']
+
+                comp_2026 = Municipales2026T1T2Comparator(data_t1, data_t2)
+
+                with st.container():
+                    render_2026_comparison_dashboard(comp_2026)
+
+                st.divider()
+
+                with st.container():
+                    render_2026_comparison_visualization(comp_2026)
 
             except Exception as e:
                 st.error(f"❌ Erreur lors du chargement des données : {str(e)}")

@@ -1278,3 +1278,407 @@ class InterElectionComparisonVisualizer:
             height=550,
         )
         return fig
+
+# =============================================================================
+# Comparaison TOUR 1 vs TOUR 2 — Municipales 2026 Besancon
+# =============================================================================
+
+class Municipales2026T1T2Comparator:
+    """
+    Compare les resultats du T1 et du T2 des municipales 2026 a Besancon,
+    bureau par bureau.
+
+    Candidats T1 : Fagaut, Vignot, Veziès, Delabrousse, Ricciardetti, Friess
+    Candidats T2 : Fagaut, Vignot
+    """
+
+    CANDIDATS_T2 = ['Ludovic Fagaut', 'Anne Vignot']
+
+    def __init__(self, data_t1: Tuple, data_t2: Tuple):
+        self.geojson_t1, self.df_t1, self.geojson_bureaux = data_t1
+        self.geojson_t2, self.df_t2, _                    = data_t2
+        self.map_center      = self._calculate_map_center()
+        self.comparison_data = self._build_comparison_data()
+
+    def _calculate_map_center(self) -> Dict:
+        lons, lats = [], []
+        for feature in self.geojson_t1['features']:
+            coords    = feature['geometry']['coordinates']
+            geom_type = feature['geometry']['type']
+            if geom_type == 'Polygon':
+                for ring in coords:
+                    for p in ring:
+                        lons.append(p[0]); lats.append(p[1])
+            elif geom_type == 'MultiPolygon':
+                for polygon in coords:
+                    for ring in polygon:
+                        for p in ring:
+                            lons.append(p[0]); lats.append(p[1])
+        return {'lat': sum(lats) / len(lats), 'lon': sum(lons) / len(lons)}
+
+    def _build_comparison_data(self) -> pd.DataFrame:
+        """
+        Construit un DataFrame pivot (un bureau par ligne) avec :
+          - Stats de participation T1 / T2
+          - Voix et score (% exprimes) de chaque candidat T1
+          - Voix et score de Fagaut et Vignot au T2
+          - Deltas : DELTA_PARTICIPATION, DELTA_FAGAUT, DELTA_VIGNOT
+          - VOIX_REPORT_DISPONIBLE_T1 : total des voix des candidats elimines au T1
+        """
+        # ---- Stats de bureau T1 ----------------------------------------
+        first_t1 = self.df_t1.groupby('NUM_BUREAU').first()
+        bstats_t1 = first_t1[['INSCRITS', 'VOTANTS', 'EXPRIMES', 'TAUX_ABSTENTION']].copy()
+        bstats_t1.columns = [f'{c}_T1' for c in bstats_t1.columns]
+        bstats_t1['PARTICIPATION_T1'] = 100 - bstats_t1['TAUX_ABSTENTION_T1']
+
+        for candidat in sorted(self.df_t1['CANDIDAT'].unique()):
+            key = candidat.split()[-1].upper()
+            dc  = self.df_t1[self.df_t1['CANDIDAT'] == candidat].set_index('NUM_BUREAU')
+            bstats_t1[f'VOIX_{key}_T1']  = dc['VOIX']
+            bstats_t1[f'SCORE_{key}_T1'] = dc['POURCENTAGE_EXPRIMES']
+
+        # ---- Stats de bureau T2 ----------------------------------------
+        first_t2 = self.df_t2.groupby('NUM_BUREAU').first()
+        bstats_t2 = first_t2[['INSCRITS', 'VOTANTS', 'EXPRIMES', 'TAUX_ABSTENTION']].copy()
+        bstats_t2.columns = [f'{c}_T2' for c in bstats_t2.columns]
+        bstats_t2['PARTICIPATION_T2'] = 100 - bstats_t2['TAUX_ABSTENTION_T2']
+
+        for candidat in sorted(self.df_t2['CANDIDAT'].unique()):
+            key = candidat.split()[-1].upper()
+            dc  = self.df_t2[self.df_t2['CANDIDAT'] == candidat].set_index('NUM_BUREAU')
+            bstats_t2[f'VOIX_{key}_T2']  = dc['VOIX']
+            bstats_t2[f'SCORE_{key}_T2'] = dc['POURCENTAGE_EXPRIMES']
+            for extra in ['ELU', 'SIEGES_CM', 'SIEGES_CC']:
+                if extra in dc.columns:
+                    bstats_t2[f'{extra}_{key}'] = dc[extra]
+
+        # ---- Fusion (inner = bureaux presents aux deux tours) ----------
+        df = bstats_t1.join(bstats_t2, how='inner')
+
+        # ---- Deltas ----------------------------------------------------
+        df['DELTA_PARTICIPATION'] = df['PARTICIPATION_T2'] - df['PARTICIPATION_T1']
+        for key in ['FAGAUT', 'VIGNOT']:
+            s1 = f'SCORE_{key}_T1'
+            s2 = f'SCORE_{key}_T2'
+            if s1 in df.columns and s2 in df.columns:
+                df[f'DELTA_{key}'] = df[s2] - df[s1]
+
+        # ---- Voix disponibles pour report (candidats elimines au T1) --
+        t1_only_keys = [
+            c.split()[-1].upper()
+            for c in self.df_t1['CANDIDAT'].unique()
+            if c.split()[-1].upper() not in ('FAGAUT', 'VIGNOT')
+        ]
+        report_cols = [f'VOIX_{k}_T1' for k in t1_only_keys if f'VOIX_{k}_T1' in df.columns]
+        df['VOIX_REPORT_DISPONIBLE_T1'] = df[report_cols].sum(axis=1) if report_cols else 0
+
+        return df.reset_index()
+
+    def get_comparison_stats(self) -> Dict:
+        """Statistiques globales comparatives T1->T2."""
+        df = self.comparison_data
+
+        total_inscrits_t1 = int(df['INSCRITS_T1'].sum())
+        total_inscrits_t2 = int(df['INSCRITS_T2'].sum())
+        total_votants_t1  = int(df['VOTANTS_T1'].sum())
+        total_votants_t2  = int(df['VOTANTS_T2'].sum())
+        participation_t1  = total_votants_t1 / total_inscrits_t1 * 100 if total_inscrits_t1 else 0.0
+        participation_t2  = total_votants_t2 / total_inscrits_t2 * 100 if total_inscrits_t2 else 0.0
+
+        candidats_stats = {}
+        for key, name in [('FAGAUT', 'Ludovic Fagaut'), ('VIGNOT', 'Anne Vignot')]:
+            v1 = f'VOIX_{key}_T1';  v2 = f'VOIX_{key}_T2'
+            s1 = f'SCORE_{key}_T1'; s2 = f'SCORE_{key}_T2'
+            if all(c in df.columns for c in [v1, v2, s1, s2]):
+                other_key = 'VIGNOT' if key == 'FAGAUT' else 'FAGAUT'
+                other_s2  = f'SCORE_{other_key}_T2'
+                bureaux_en_tete = int((df[s2] > df[other_s2]).sum()) if other_s2 in df.columns else 0
+                candidats_stats[name] = {
+                    'total_voix_t1':      int(df[v1].sum()),
+                    'total_voix_t2':      int(df[v2].sum()),
+                    'score_moyen_t1':     float(df[s1].mean()),
+                    'score_moyen_t2':     float(df[s2].mean()),
+                    'delta_moyen':        float(df[f'DELTA_{key}'].mean()) if f'DELTA_{key}' in df.columns else 0.0,
+                    'bureaux_en_tete_t2': bureaux_en_tete,
+                }
+
+        t1_only_keys = [
+            c.split()[-1].upper()
+            for c in self.df_t1['CANDIDAT'].unique()
+            if c.split()[-1].upper() not in ('FAGAUT', 'VIGNOT')
+        ]
+        report_details = {}
+        for key in t1_only_keys:
+            vc = f'VOIX_{key}_T1'
+            if vc in df.columns:
+                matching = [c for c in self.df_t1['CANDIDAT'].unique() if c.split()[-1].upper() == key]
+                display_name = matching[0] if matching else key
+                report_details[display_name] = int(df[vc].sum())
+
+        return {
+            'nb_bureaux':          len(df),
+            'total_inscrits_t1':   total_inscrits_t1,
+            'total_inscrits_t2':   total_inscrits_t2,
+            'total_votants_t1':    total_votants_t1,
+            'total_votants_t2':    total_votants_t2,
+            'participation_t1':    participation_t1,
+            'participation_t2':    participation_t2,
+            'delta_participation': participation_t2 - participation_t1,
+            'candidats':           candidats_stats,
+            'report_details':      report_details,
+            'voix_report_total':   int(df['VOIX_REPORT_DISPONIBLE_T1'].sum()),
+        }
+
+    def create_participation_evolution_map(self) -> go.Figure:
+        """Carte choroplèthe du delta de participation (T2 - T1) par bureau."""
+        df = self.comparison_data
+
+        hover_texts = [
+            f"<b>Bureau {int(row['NUM_BUREAU'])}</b><br>"
+            f"Participation T1 : {row['PARTICIPATION_T1']:.2f}%<br>"
+            f"Participation T2 : {row['PARTICIPATION_T2']:.2f}%<br>"
+            f"<b>Evolution : {row['DELTA_PARTICIPATION']:+.2f} pts</b>"
+            for _, row in df.iterrows()
+        ]
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=self.geojson_t1,
+            locations=df['NUM_BUREAU'].tolist(),
+            z=df['DELTA_PARTICIPATION'].tolist(),
+            featureidkey="properties.NUM_BUREAU",
+            colorscale='RdBu',
+            zmid=0,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(title="Evolution<br>participation<br>(pts)", thickness=18, len=0.7, x=1.02),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(text='<b>Evolution de la participation T1 -> T2</b>', x=0.5, xanchor='center'),
+            height=800, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_candidate_delta_map(self, candidat: str) -> go.Figure:
+        """
+        Carte du delta de score (T2 - T1 en points %) pour un candidat.
+        candidat : 'Ludovic Fagaut' ou 'Anne Vignot'
+        """
+        key        = candidat.split()[-1].upper()
+        delta_col  = f'DELTA_{key}'
+        score1_col = f'SCORE_{key}_T1'
+        score2_col = f'SCORE_{key}_T2'
+        voix1_col  = f'VOIX_{key}_T1'
+        voix2_col  = f'VOIX_{key}_T2'
+        df = self.comparison_data
+
+        if delta_col not in df.columns:
+            return go.Figure()
+
+        hover_texts = [
+            f"<b>Bureau {int(row['NUM_BUREAU'])}</b><br>"
+            f"Score T1 : {row.get(score1_col, 0):.2f}%<br>"
+            f"Score T2 : {row.get(score2_col, 0):.2f}%<br>"
+            f"<b>Evolution : {row[delta_col]:+.2f} pts</b><br>"
+            f"Voix T1 : {int(row.get(voix1_col, 0))} -> T2 : {int(row.get(voix2_col, 0))}"
+            for _, row in df.iterrows()
+        ]
+
+        colorscale = [
+            [0.0,  '#d73027'],
+            [0.35, '#fee08b'],
+            [0.5,  '#ffffbf'],
+            [0.65, '#d9ef8b'],
+            [1.0,  '#1a9850'],
+        ]
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=self.geojson_t1,
+            locations=df['NUM_BUREAU'].tolist(),
+            z=df[delta_col].tolist(),
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=colorscale,
+            zmid=0,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.75,
+            marker_line_width=1,
+            marker_line_color='white',
+            colorbar=dict(
+                title=f"Evolution<br>score {candidat.split()[-1]}<br>(pts)",
+                thickness=18, len=0.7, x=1.02,
+            ),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(text=f'<b>Evolution score {candidat} — T1 -> T2</b>', x=0.5, xanchor='center'),
+            height=800, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_results_map_t2(self) -> go.Figure:
+        """Carte du candidat en tete au T2 par bureau (Fagaut vs Vignot)."""
+        df  = self.comparison_data
+        s_f = 'SCORE_FAGAUT_T2'
+        s_v = 'SCORE_VIGNOT_T2'
+
+        if s_f not in df.columns or s_v not in df.columns:
+            return go.Figure()
+
+        z_values    = (df[s_f] - df[s_v]).tolist()
+        hover_texts = [
+            f"<b>Bureau {int(row['NUM_BUREAU'])}</b><br>"
+            f"Fagaut : {row.get(s_f, 0):.2f}% ({int(row.get('VOIX_FAGAUT_T2', 0))} voix)<br>"
+            f"Vignot : {row.get(s_v, 0):.2f}% ({int(row.get('VOIX_VIGNOT_T2', 0))} voix)<br>"
+            f"<b>En tete : {'Fagaut' if row[s_f] >= row[s_v] else 'Vignot'} "
+            f"(+{abs(row[s_f] - row[s_v]):.2f}%)</b>"
+            for _, row in df.iterrows()
+        ]
+
+        # Bleu pour Fagaut (z>0), Vert pour Vignot (z<0)
+        colorscale = [
+            [0.0,  '#4daf4a'],
+            [0.45, '#d9f0d3'],
+            [0.5,  '#f7f7f7'],
+            [0.55, '#d5e5f2'],
+            [1.0,  '#377eb8'],
+        ]
+
+        fig = go.Figure(go.Choroplethmapbox(
+            geojson=self.geojson_t1,
+            locations=df['NUM_BUREAU'].tolist(),
+            z=z_values,
+            featureidkey="properties.NUM_BUREAU",
+            colorscale=colorscale,
+            zmid=0,
+            text=hover_texts,
+            hovertemplate='%{text}<extra></extra>',
+            marker_opacity=0.8,
+            marker_line_width=1.5,
+            marker_line_color='white',
+            colorbar=dict(title="<- Vignot | Fagaut ->", thickness=18, len=0.7, x=1.02),
+        ))
+        fig.update_layout(
+            mapbox=dict(style='open-street-map', center=self.map_center, zoom=11.5),
+            title=dict(
+                text='<b>Resultats 2eme tour — Fagaut vs Vignot par bureau</b>',
+                x=0.5, xanchor='center',
+            ),
+            height=800, margin={"r": 0, "t": 60, "l": 0, "b": 0},
+        )
+        return fig
+
+    def create_score_evolution_bars(self, candidat: str) -> go.Figure:
+        """Graphique en barres du delta de score T1->T2 par bureau, trie par evolution."""
+        key       = candidat.split()[-1].upper()
+        delta_col = f'DELTA_{key}'
+        df        = self.comparison_data.copy()
+
+        if delta_col not in df.columns:
+            return go.Figure()
+
+        df     = df.sort_values(delta_col)
+        colors = ['#d73027' if v < 0 else '#1a9850' for v in df[delta_col]]
+
+        fig = go.Figure(go.Bar(
+            x=df['NUM_BUREAU'].astype(str),
+            y=df[delta_col].round(2),
+            marker_color=colors,
+            text=[f"{v:+.1f} pts" for v in df[delta_col]],
+            textposition='outside',
+            hovertemplate=(
+                "<b>Bureau %{x}</b><br>"
+                f"Evolution {candidat} : %{{y:+.2f}} pts<extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            title=f'<b>Evolution score {candidat} — T1 -> T2 (par bureau)</b>',
+            xaxis_title='Bureau', yaxis_title='Evolution (pts %)',
+            height=500, xaxis=dict(tickangle=45, tickfont=dict(size=8)),
+        )
+        return fig
+
+    def create_vote_transfer_chart(self) -> go.Figure:
+        """
+        Graphique en barres groupees montrant, par bureau :
+        - Voix disponibles pour report au T1 (candidats elimines)
+        - Gain de voix Fagaut (T2 - T1)
+        - Gain de voix Vignot (T2 - T1)
+        """
+        df = self.comparison_data.copy()
+        if 'VOIX_REPORT_DISPONIBLE_T1' not in df.columns:
+            return go.Figure()
+
+        df = df.sort_values('NUM_BUREAU')
+        bureaux      = df['NUM_BUREAU'].astype(str)
+        gain_fagaut  = (df.get('VOIX_FAGAUT_T2', pd.Series(0, index=df.index)) - df.get('VOIX_FAGAUT_T1', pd.Series(0, index=df.index))).fillna(0)
+        gain_vignot  = (df.get('VOIX_VIGNOT_T2', pd.Series(0, index=df.index)) - df.get('VOIX_VIGNOT_T1', pd.Series(0, index=df.index))).fillna(0)
+        report_dispo = df['VOIX_REPORT_DISPONIBLE_T1']
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name='Voix de report disponibles (T1)', x=bureaux, y=report_dispo,
+            marker_color='#969696', opacity=0.6,
+        ))
+        fig.add_trace(go.Bar(
+            name='Gain de voix Fagaut (T2-T1)', x=bureaux, y=gain_fagaut,
+            marker_color='#377eb8',
+        ))
+        fig.add_trace(go.Bar(
+            name='Gain de voix Vignot (T2-T1)', x=bureaux, y=gain_vignot,
+            marker_color='#4daf4a',
+        ))
+        fig.update_layout(
+            title='<b>Report de voix par bureau — T1 -> T2</b>',
+            xaxis_title='Bureau', yaxis_title='Voix',
+            barmode='group', height=550,
+            xaxis=dict(tickangle=45, tickfont=dict(size=8)),
+            legend=dict(yanchor='top', y=0.99, xanchor='right', x=0.99),
+        )
+        return fig
+
+    def create_scatter_t1_vs_t2(self, candidat: str) -> go.Figure:
+        """Scatter : score T1 (x) vs score T2 (y) par bureau pour un candidat."""
+        key = candidat.split()[-1].upper()
+        s1  = f'SCORE_{key}_T1'
+        s2  = f'SCORE_{key}_T2'
+        df  = self.comparison_data
+
+        if s1 not in df.columns or s2 not in df.columns:
+            return go.Figure()
+
+        delta_col = f'DELTA_{key}'
+        colors    = df[delta_col] if delta_col in df.columns else df[s2] - df[s1]
+        mn = min(df[s1].min(), df[s2].min()) * 0.95
+        mx = max(df[s1].max(), df[s2].max()) * 1.05
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df[s1], y=df[s2],
+            mode='markers+text',
+            text=df['NUM_BUREAU'].astype(str),
+            textposition='top center',
+            textfont=dict(size=8),
+            marker=dict(
+                size=10, color=colors, colorscale='RdYlGn', cmid=0,
+                showscale=True, colorbar=dict(title='Evolution (pts)'),
+            ),
+            hovertemplate=(
+                '<b>Bureau %{text}</b><br>'
+                'T1 : %{x:.1f}%<br>T2 : %{y:.1f}%<extra></extra>'
+            ),
+        ))
+        fig.add_trace(go.Scatter(
+            x=[mn, mx], y=[mn, mx],
+            mode='lines', line=dict(color='gray', dash='dash'),
+            name='Pas de changement', showlegend=True,
+        ))
+        fig.update_layout(
+            title=f'<b>{candidat} — Score T1 vs T2 par bureau</b>',
+            xaxis_title='Score T1 (%)', yaxis_title='Score T2 (%)',
+            height=600,
+        )
+        return fig
